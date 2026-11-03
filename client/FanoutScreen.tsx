@@ -281,7 +281,6 @@ function RelayCard({
           {upstream.name}
         </Text>
         <View style={styles.actionGroup}>
-          {preferred ? <Pill text="Preferred" tone="ok" theme={theme} /> : null}
           <Pill text={line.label} tone={line.tone} theme={theme} />
         </View>
       </View>
