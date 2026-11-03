@@ -36,6 +36,9 @@ The screen shows:
   (the second confirms), as long as at least one remains.
 - **Pair a device**: a **Copy link** button per relay. The link is the same pairing link the daemon prints for its
   own relay, built for that relay. Paste it under Add host, or open it on the device.
+- **Export**: an **Export .json** button writes the current relays, priority and proxy address to a `.json` file
+  beside the config, shows where it went, and offers **Copy JSON** for devices that would rather not open a file.
+  See "Exporting the configuration".
 - When the plugin runs but the daemon is still dialing a relay directly, the headline says
   "Daemon not using the proxy" and gives the exact setting to change.
 
@@ -233,6 +236,9 @@ daemon still pointed at the proxy and the plugin off, the daemon has no relay pa
   `ws://` and `http://` mean plain, and a bare host without a port is refused so a typo cannot silently dial port 80.
   At most 8 relays. A duplicate endpoint, a duplicate or invalid name, or a missing port is refused with the reason
   beside the field.
+- **Exports are ordinary config files.** **Export .json** writes `exports/relay-fanout-config-<time>.json` beside the
+  config, in the same shape `config.json` uses, so it can be dropped in as the config on another daemon. Nothing is
+  overwritten and nothing running changes. See "Exporting the configuration".
 - **A session stays on the relay its client used.** The proxy never moves a session to another relay and never replays
   frames lost when a path dies (the frames are encrypted per connection and carry no sequence numbers). Recovery is
   the client's: the app probes all of a host's connections every 2 s, switches when the active one is unavailable, and
@@ -250,6 +256,18 @@ daemon still pointed at the proxy and the plugin off, the daemon has no relay pa
   A second control connection replaces the first, same as on a real relay.
 - Plugin logs: `paseo plugin logs relay-fanout`.
 
+## Exporting the configuration
+
+**Export .json** on the screen writes the running config to
+`plugin-data/relay-fanout/exports/relay-fanout-config-<time>.json`, beside `config.json`. The file holds the relays,
+their TLS setting, the priority and the proxy's listen address, in the same shape as `config.json`, so it can be
+copied over `config.json` on this or another daemon and is read back unchanged. **Copy JSON** puts the same text on
+the clipboard for a device that would rather paste it somewhere.
+
+The name is an ISO timestamp with the colons removed, because Windows does not allow them:
+`relay-fanout-config-2026-11-04T12-30-00Z.json`. Nothing is overwritten; a second export at the same moment gets
+`-2`. Exporting only writes a file: no relay is touched and nothing running changes.
+
 ## Config reference
 
 | Field | Meaning |
@@ -263,6 +281,9 @@ daemon still pointed at the proxy and the plugin off, the daemon has no relay pa
 | `preference.preferred` | Required when the mode is `preferred`. Must name one of the relays. |
 
 Between 1 and 8 upstreams. `PASEO_RELAY_FANOUT_CONFIG` overrides the config file path.
+
+An export from the screen uses this same shape, with `listen`, `upstreams` and `preference` always written out, so
+an exported file can be put in place as `config.json` without editing.
 
 ## Development
 
@@ -283,6 +304,7 @@ daemon's relay transport.
 | `server/priority.ts` | The pure rules for which relays to keep registered in Preferred mode. |
 | `server/relays.ts`, `actions.ts` | Validating an added relay, changing the preference, removing a relay, and committing the result. |
 | `server/pairing.ts`, `status.ts` | Per-relay pairing links (public data only), status for the screen. |
+| `server/export.ts` | Writing the running config as a `.json` file beside it, without overwriting earlier exports. |
 | `shared/status.ts`, `relay-input.ts` | The RPC contracts and the address rules shared by both sides. |
 | `index.client.tsx` | App entry: the screen, the sidebar row, the Command Center item. |
 | `client/view-model.ts` | The wording and colour rules for each state (unit tested, no React). |

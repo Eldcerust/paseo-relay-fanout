@@ -1,10 +1,11 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { createActions } from "./server/actions";
 import { loadConfig, resolvePaseoHome, saveConfig, type FanoutConfig } from "./server/config";
+import { exportConfig } from "./server/export";
 import { buildPairingLinks } from "./server/pairing";
 import { FanoutProxy, type Logger } from "./server/proxy";
 import { createStatusHandler, type StatusMeta } from "./server/status";
-import { addRelayRpc, pairingRpc, preferenceRpc, removeRelayRpc, statusRpc } from "./shared/status";
+import { addRelayRpc, exportConfigRpc, pairingRpc, preferenceRpc, removeRelayRpc, statusRpc } from "./shared/status";
 
 const logger: Logger = {
   info: (message, fields) => console.log(format(message, fields)),
@@ -59,6 +60,16 @@ export default function contribute(server: PluginServerContext) {
   server.handle(preferenceRpc, (input) => actions.setPreference(input));
   server.handle(addRelayRpc, (input) => actions.addRelay(input));
   server.handle(removeRelayRpc, (input) => actions.removeRelay(input));
+  // An export is a copy of what is running now, so it is taken from `current`, not from `loaded`.
+  server.handle(exportConfigRpc, () => {
+    try {
+      const exported = exportConfig({ config: current, configPath: loaded.path });
+      logger.info("config exported", { path: exported.path });
+      return { ok: true as const, ...exported };
+    } catch (error) {
+      return { ok: false as const, error: `Could not write the export: ${(error as Error).message}` };
+    }
+  });
   server.handle(pairingRpc, () =>
     buildPairingLinks({
       home: resolvePaseoHome(),

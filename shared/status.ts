@@ -122,6 +122,26 @@ export const removeRelayRpc = defineRpc({
   output: resultSchema,
 });
 
+/**
+ * Write the current relays, priority and proxy address as a `.json` file beside the config. The
+ * answer holds where the file went and the exact text it holds, so a screen can show the path and
+ * offer a copy on devices where opening a file is awkward.
+ */
+export const exportConfigRpc = defineRpc({
+  name: "relay-fanout.export-config",
+  input: z.object({}),
+  output: z.discriminatedUnion("ok", [
+    z.object({
+      ok: z.literal(true),
+      /** Absolute path of the file that was written. */
+      path: z.string(),
+      filename: z.string(),
+      json: z.string(),
+    }),
+    z.object({ ok: z.literal(false), error: z.string() }),
+  ]),
+});
+
 export type PluginStatus = z.output<typeof statusRpc.output>;
 export type UpstreamView = PluginStatus["upstreams"][number];
 export type UpstreamState = z.output<typeof upstreamStateSchema>;
@@ -131,3 +151,4 @@ export type UpstreamPriorityView = NonNullable<UpstreamView["priority"]>;
 export type PreferenceView = z.output<typeof preferenceSchema>;
 export type PairingResult = z.output<typeof pairingRpc.output>;
 export type ActionResult = z.output<typeof resultSchema>;
+export type ExportResult = z.output<typeof exportConfigRpc.output>;

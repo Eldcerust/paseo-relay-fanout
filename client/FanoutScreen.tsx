@@ -5,7 +5,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { addRelayRpc, preferenceRpc, removeRelayRpc, type PluginStatus } from "../shared/status";
+import { addRelayRpc, exportConfigRpc, preferenceRpc, removeRelayRpc, type PluginStatus } from "../shared/status";
 import { StatusDot } from "./StatusDot";
 import { PAIRING_QUERY_KEY, STATUS_QUERY_PREFIX, useFanoutStatus, usePairingLinks } from "./status-query";
 import { describeLatency, describeUpstream, summarize, type Tone } from "./view-model";
@@ -483,6 +483,91 @@ function PairingSection({ styles }: { styles: Styles }) {
   );
 }
 
+function ExportSection({ styles }: { styles: Styles }) {
+  const exportConfig = useRpc(exportConfigRpc);
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [exported, setExported] = useState<{ filename: string; path: string; json: string } | null>(null);
+
+  async function write() {
+    if (busy) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const result = await exportConfig({});
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      setExported({ filename: result.filename, path: result.path, json: result.json });
+      toast.show(`Exported ${result.filename}`, { variant: "success" });
+    } catch (issue) {
+      setError(`The plugin did not answer: ${messageOf(issue)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copy() {
+    if (!exported) return;
+    try {
+      await copyText(exported.json);
+      toast.show("Config JSON copied", { variant: "success" });
+    } catch {
+      toast.error("Copying is not available here");
+    }
+  }
+
+  return (
+    <View style={{ gap: space.sm }}>
+      <Text accessibilityRole="header" style={styles.section}>
+        Export
+      </Text>
+      <View style={styles.card}>
+        <Text style={styles.muted}>
+          Save the relays, the priority and the proxy address as a .json file. It is written beside the plugin's
+          config and is a valid config file, so it can set up another daemon or be kept as a backup.
+        </Text>
+        <View style={styles.formRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Export the config as JSON"
+            accessibilityState={{ disabled: busy }}
+            disabled={busy}
+            onPress={() => void write()}
+            style={[styles.button, busy ? styles.dim : null]}
+          >
+            <Text style={styles.buttonText}>{busy ? "Exporting" : "Export .json"}</Text>
+          </Pressable>
+          {exported ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Copy the exported JSON"
+              onPress={() => void copy()}
+              style={styles.smallButton}
+            >
+              <Text style={styles.smallButtonText}>Copy JSON</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        {exported ? (
+          <View style={{ gap: 2, marginTop: space.xs }}>
+            <MetaRow label="File" value={exported.filename} styles={styles} />
+            <MetaRow label="Path" value={exported.path} styles={styles} />
+          </View>
+        ) : null}
+        <Text style={styles.hint}>Earlier exports are kept; every press writes a new file.</Text>
+        {error ? (
+          <Text accessibilityLiveRegion="polite" style={styles.error}>
+            {error}
+          </Text>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 export function FanoutScreen({ theme, layout }: PluginScreenProps) {
   const query = useFanoutStatus(2_000, true);
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
@@ -594,6 +679,7 @@ export function FanoutScreen({ theme, layout }: PluginScreenProps) {
             ))}
           </View>
           <AddRelaySection onChanged={refresh} styles={styles} />
+          <ExportSection styles={styles} />
           <PairingSection styles={styles} />
         </>
       ) : null}
