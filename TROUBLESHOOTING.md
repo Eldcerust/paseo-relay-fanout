@@ -57,7 +57,9 @@ $p = "C:\Program Files\Paseo\resources\bin\paseo.cmd"     # in Git Bash it is $P
    If it still says `relay.paseo.sh:443`, the switch was not applied or the daemon was not restarted. Nothing is broken, it just is not using the proxy.
 2. `& $p plugin ls` -> `relay-fanout` must be `running`. If `failed`, read `& $p plugin logs relay-fanout`.
 3. `Invoke-RestMethod http://127.0.0.1:7733/health` -> healthy looks like `daemonConnected: true` and each upstream
-   `state: connected`, `ready: true`. The same status is on the **Relay Fan-out** sidebar screen (dot: green/amber/red).
+   `state: connected`, `ready: true`, plus `preference` and each upstream's `priority.role` (`active`, `standby`,
+   `connecting`, `down`). In Auto every relay should be `active`; in Preferred the chosen one should be `active` and
+   the rest `standby`. The same status is on the **Relay Fan-out** sidebar screen (dot: green/amber/red).
 4. Daemon log lines to grep in `daemon.log`: `relay_control_connected`, `relay_control_disconnected`, `relay_data_connected`. Connection ids look like `official:conn_1` / `home:conn_1`.
 
 ## Failure -> cause -> fix
@@ -69,6 +71,12 @@ $p = "C:\Program Files\Paseo\resources\bin\paseo.cmd"     # in Git Bash it is $P
 | Plugin `failed: Invalid relay-fanout config ...` | Bad `plugin-data\relay-fanout\config.json` (listen host must be loopback, names `a-z0-9-`, endpoints `host:port`) | Fix the file, `& $p plugin reload relay-fanout` |
 | Sidebar says "Daemon not using the proxy" | `daemon.relay.endpoint` is not `127.0.0.1:7733`, or the daemon was not restarted after setting it | Set it (see intended settings), restart the daemon |
 | One relay shows `Down` with an error | That relay is unreachable | Check it directly (below). The other relay keeps working; the proxy retries on its own (1s growing to 30s) |
+| A healthy relay shows `Standby` | Normal in **Preferred** mode: it is deliberately not registered while the preferred relay serves | Nothing to fix. Press **Use** next to Auto, or **Prefer** on that relay, to change it |
+| Headline says "Using fallback relay ..." | The preferred relay is unavailable, so another relay is carrying traffic | Check the preferred relay. It is retried every 2 minutes; the fallback is let go 15 seconds after the preferred one is stable |
+| Preferred relay card says `Retrying` with a next-try time | It was given up on after about 20 seconds without becoming ready | Check the relay. The next retest is automatic; pressing **Prefer** again does not skip it |
+| "Preferred relay is not in the list" | `preference.preferred` names a relay that is no longer in the config (for example after hand-editing) | Press **Prefer** on a current relay, or press **Use** next to Auto |
+| Add relay is refused | The address, port, name or count is invalid: no port with a bare host, unsupported scheme, duplicate endpoint/name, or more than 8 relays | Read the message under the field. `wss://host` or `host:443` is enough; `wss://` and port 443 mean TLS |
+| A relay removed from the screen dropped its sessions | Expected. Removing a relay closes its control and data sockets | Re-add it if that was a mistake; the last relay cannot be removed |
 | `home` shows "No reply" / `ready: false` | The self-hosted relay accepted the socket but sent no control message (the real daemon would reject it too) | Relay-side problem, see "Relay side". Remove `home` from the proxy config as a stopgap |
 | `home` flaps between connected and down | Two upstreams point at the **same** relay (e.g. public name and NetBird IP). A relay keeps one control socket per server id, so each replaces the other | Keep exactly one address per relay |
 | Pairing links printed by the daemon contain `127.0.0.1:7733` | `publicEndpoint` / `publicUseTls` not set. `publicEndpoint` silently defaults to `endpoint` | Set `daemon.relay.publicEndpoint relay.paseo.sh:443` and `daemon.relay.publicUseTls true`, restart |
@@ -104,6 +112,8 @@ Last resort: copy `config.json.bak-before-relay-fanout` over `config.json` and r
 
 - **Restarting the daemon stops every running agent, including the agent doing the work.** Hand the restart to the user (a Run card or their terminal) and do not do it from an agent that lives on this daemon.
 - Relay endpoint settings are read at daemon start. A config change needs a restart. Plugin source changes need only `& $p plugin reload relay-fanout`.
+- The relay list and the preference are the exception: the screen saves them to `plugin-data\relay-fanout\config.json` and applies them to the running proxy immediately, with no restart. Do not hand-edit the file while the plugin is running unless you reload it afterwards, or the screen's next change can overwrite your edit.
+- In Preferred mode, the proxy has no way to tell a phone which relay to use. It only decides which relays the daemon is registered through. The device still chooses among the relays it knows.
 - A plugin's `contribute` must return its cleanup function synchronously. An `async` one fails with "Plugin contribution must return a cleanup function".
 - A relay keeps one control socket per server id (newest wins) and one data socket per connection id.
 - A session never moves between relays. The app reconnects through another relay, and the daemon resumes the session by client id if that happens within 90 seconds. Frames lost when a path dies are not replayed.
@@ -123,9 +133,7 @@ Last resort: copy `config.json.bak-before-relay-fanout` over `config.json` and r
 ```
 cd <path to this repo>
 npm run typecheck      # two programs: server (Node types) and client (React Native types)
-npm test               # 69 tests, includes real end-to-end encrypted channels through the proxy
+npm test               # 224 tests, includes real end-to-end encrypted channels through the proxy
 ```
 
-Layout: `index.server.ts` (entry), `server/proxy.ts` (the proxy), `server/config.ts`, `server/pairing.ts`, `shared/status.ts` (RPC contracts),
-`index.client.tsx` + `client/` (sidebar row and status screen). Test a change on a throwaway daemon (own `--home`, own port, `features.webUi.enabled`
-to view it in a browser) before touching the live one.
+Layout: `index.server.ts` (entry), `server/proxy.ts` (the proxy), `server/config.ts`, `server/priority.ts` (which relays stay registered in Preferred), `server/relays.ts` + `server/actions.ts` (add, remove, preference), `server/pairing.ts`, `shared/status.ts` and `shared/relay-input.ts` (contracts and address rules), `index.client.tsx` + `client/` (sidebar row and status screen). Test a change on a throwaway daemon (own `--home`, own port, `features.webUi.enabled` to view it in a browser) before touching the live one.

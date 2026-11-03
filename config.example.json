@@ -3,5 +3,6 @@
   "upstreams": [
     { "name": "official", "endpoint": "relay.paseo.sh:443", "useTls": true },
     { "name": "home", "endpoint": "paseo.example.com:443", "useTls": true }
-  ]
+  ],
+  "preference": { "mode": "auto" }
 }

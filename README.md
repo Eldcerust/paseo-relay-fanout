@@ -15,18 +15,25 @@ end-to-end encryption between client and daemon is not affected.
 ## The sidebar entry
 
 A **Relay Fan-out** row in the sidebar (like Paseo Cafe) opens a status screen. The dot on the row is the
-whole plugin's health: green when every relay is connected, amber when some are not or when the daemon is
-not using the proxy yet, red when no relay is connected or the plugin does not answer.
+whole plugin's health: green when every relay is connected in Auto, or when the preferred relay is serving in
+Preferred; amber when a fallback is carrying traffic or some relay is missing; red when nothing serves or the
+plugin does not answer.
 
 The screen shows:
 
-- A headline such as "All 2 relays connected" or "1 of 2 relays connected", with the proxy address, the
-  daemon's server id and where the config came from.
-- One card per relay: connected, connecting, down (with the error and a note that it is retrying) or not registered,
+- A headline such as "All 2 relays connected", "Preferred relay home connected" or "Using fallback relay official",
+  with the proxy address, the daemon's server id and where the config came from.
+- **Priority**: an **Auto** button, and a green **Prefer** button on every relay card. Auto keeps every relay open and
+  lets each device pick the fastest one; Prefer keeps only the chosen relay registered and stands the others by.
+  See "Choosing which relay to use".
+- One card per relay: connected, standby, connecting, retrying (with the error and the next try) or not registered,
   plus uptime and how many sessions it carries.
 - **Live round trip per relay**, two numbers side by side: `Request 15 ms` (a `GET /health` to the relay) and
   `Socket ping 14 ms` (a WebSocket ping), each with its recent average, best and worst and how many failed, plus
   `Connect 86 ms`. When the two disagree a lot, the card says so. See "What the latency numbers mean".
+- **Add a relay**: paste `wss://relay.example.org`, `host:port` or a full `https://` URL, optionally give it a name,
+  and press **Add relay**. The change is saved and applied without a restart. A relay can be removed with two presses
+  (the second confirms), as long as at least one remains.
 - **Pair a device**: a **Copy link** button per relay. The link is the same pairing link the daemon prints for its
   own relay, built for that relay. Paste it under Add host, or open it on the device.
 - When the plugin runs but the daemon is still dialing a relay directly, the headline says
@@ -34,6 +41,26 @@ The screen shows:
 
 The same state is available from the Command Center ("Open Relay Fan-out") and as JSON at
 `http://127.0.0.1:7733/health`. The screen refreshes every 2 seconds while open, the sidebar dot every 5 seconds.
+
+## Choosing which relay to use
+
+The proxy cannot tell a phone which relay to use. The app probes every relay it knows and uses the fastest one that
+answers, and that decision belongs to the device. The proxy's lever is **which relays the daemon is reachable through
+at any moment**, so the two modes mean:
+
+- **Auto** (the default): every relay stays registered. Each device measures the relays itself and uses the fastest,
+  with its own failover. This is the best choice when devices are in different places, because only the device knows
+  its own latency.
+- **Preferred**: press **Prefer** on a relay card, or **Use** next to Auto to go back. While the preferred relay is
+  healthy it is the only one registered; the others show **Standby** and are not connected to the daemon. If it fails,
+  the proxy brings up the other relays and keeps the fastest healthy one, chosen from its own measurements. A relay
+  that stays down is retried once every **2 minutes**, and after it has been stable for 15 seconds the fallbacks stand
+  down again. A phone whose session was running through a fallback keeps that session; standing the registration down
+  does not cut it.
+
+A short drop of the preferred relay (under about 20 seconds) is ridden out without opening the others. A preference
+that names a relay that no longer exists is refused by the config loader, and the screen says so.
+
 
 ## What the latency numbers mean
 
@@ -95,12 +122,15 @@ local relays that follow the official relay's server semantics:
   config path wraps, headings shrink and the Copy link buttons grow to 44px tall.
 - The "Copy link" output for the relay that matches the daemon's own public endpoint is byte-for-byte identical to the
   link `paseo daemon pair` prints.
-- 111 automated tests (`npm test`), including real end-to-end encrypted channels through the proxy.
-  Nineteen deliberate bugs (no id prefix, frame types changed, no Origin check, no buffering, "all connected" too eagerly,
-  a silent relay counted as healthy, the secret key leaked into a pairing result, four in the data socket keepalive, and
-  six in the latency code: a late pong paired with the wrong ping, connection setup counted as latency, no request throttle,
-  the proxy's `/health` not asking for a refresh, unanswered pings not counted, refreshing on every status call, and two in the note that flags a disagreement between the request and the ping)
+- 224 automated tests (`npm test`), including real end-to-end encrypted channels through the proxy.
+  Deliberate bugs (no id prefix, frame types changed, no Origin check, no buffering, "all connected" too eagerly,
+  a silent relay counted as healthy, the secret key leaked into a pairing result, four in the data socket keepalive,
+  six in the latency code, four in the relay priority wording and four in the priority rules, among others)
   were each caught by the tests.
+- The priority rules against fake relays: preferred only, a short drop ridden out, failover to the fastest fallback,
+  giving up after the grace period, a retest once per interval, returning and standing the fallbacks down without
+  cutting a session that was running through one, changing the preference while running, and adding or removing a
+  relay while running.
 - Live after the reload on the real daemon: the plugin reconnected the daemon to the proxy in 3 seconds (14:41:21Z to 14:41:24Z),
   and the cards' numbers came from the real relays (official 18 ms request / 15 ms ping, home 45 to 75 ms / about 400 ms).
 - The latency numbers against fake relays with a known delay: a relay set to answer in 300 ms reported 300.8 ms, with its
@@ -108,6 +138,11 @@ local relays that follow the official relay's server semantics:
 
 Not verified:
 
+- **The preference controls in the real app.** The screen was rendered in Paseo's web app while building it, but the
+  new priority card, Prefer buttons and Add relay form have not been looked at in the app since they were added.
+  Their wording is unit tested and the daemon side is exercised with fake relays, but a visual pass is still owed.
+- **Preferred mode on your live daemon.** It is still in Auto, so the failover path has only been seen against fake
+  relays, not against `relay.paseo.sh` and `paseo.example.com`.
 - **The screen on iOS or Android.** It was checked in the web build at phone width. It uses only React Native
   primitives and the host's own UI kit, but a native device was not used. The sidebar icon (`Waypoints`) rendered in the web build only.
 - **The latency rows in the real app.** The text and numbers come from unit-tested code and were read from a running
@@ -139,8 +174,10 @@ npm-global 0.12.0 install; `$PASEO_CLI` points at the right one.
    paseo plugin install <path to this repo>
    ```
 
-2. **Write the config** at `<PASEO_HOME>/plugin-data/relay-fanout/config.json`. Start from `config.example.json`.
-   `useTls` defaults to true for port 443 and false otherwise.
+2. **Add relays** in one of two ways. On the **Relay Fan-out** screen, paste an address under **Add a relay** and press
+   **Add relay**; the screen writes the file and applies the change without a restart. Or write the file yourself at
+   `<PASEO_HOME>/plugin-data/relay-fanout/config.json`, starting from `config.example.json`. `useTls` defaults to true
+   for port 443 and false otherwise.
 
 3. **Point the daemon at the proxy**, then restart the daemon once (it reads the relay endpoint at start):
 
@@ -184,6 +221,16 @@ daemon still pointed at the proxy and the plugin off, the daemon has no relay pa
 - The daemon only has a relay path while this plugin is `running`. Direct connections are unaffected.
 - The daemon retries a dead proxy with its own backoff (up to 30 s), so a plugin reload costs a few seconds.
 - Each relay is retried independently (1 s growing to 30 s). One relay being down does not touch the others.
+- **In Auto, every relay is registered.** In **Preferred**, only the preferred relay is registered while it is healthy;
+  the others stand by. A preferred relay that fails is retried every 2 minutes, and the fallbacks are let go only after
+  it has been stable for 15 seconds. Changing the preference or the relay list from the screen is saved to
+  `plugin-data/relay-fanout/config.json` and applied without a restart.
+- **Removing a relay closes its sessions** and saves the change. If it was the preferred relay, the preference returns
+  to Auto. The last relay cannot be removed.
+- **Adding a relay** parses the address on both sides. `wss://` and `https://` mean TLS, port 443 means TLS,
+  `ws://` and `http://` mean plain, and a bare host without a port is refused so a typo cannot silently dial port 80.
+  At most 8 relays. A duplicate endpoint, a duplicate or invalid name, or a missing port is refused with the reason
+  beside the field.
 - **A session stays on the relay its client used.** The proxy never moves a session to another relay and never replays
   frames lost when a path dies (the frames are encrypted per connection and carry no sequence numbers). Recovery is
   the client's: the app probes all of a host's connections every 2 s, switches when the active one is unavailable, and
@@ -210,6 +257,8 @@ daemon still pointed at the proxy and the plugin off, the daemon has no relay pa
 | `upstreams[].name` | 1 to 24 characters: lowercase letters, digits, dashes. Unique. Used to prefix connection ids. |
 | `upstreams[].endpoint` | `host:port`, with IPv6 hosts in brackets. |
 | `upstreams[].useTls` | Optional. Defaults to true when the port is 443. |
+| `preference.mode` | Optional. `auto` (default) keeps every relay open; `preferred` keeps only `preference.preferred` open while healthy. |
+| `preference.preferred` | Required when the mode is `preferred`. Must name one of the relays. |
 
 Between 1 and 8 upstreams. `PASEO_RELAY_FANOUT_CONFIG` overrides the config file path.
 
@@ -227,10 +276,12 @@ daemon's relay transport.
 
 | Path | Role |
 | --- | --- |
-| `index.server.ts` | Daemon entry: starts the proxy, answers the two RPCs. |
-| `server/proxy.ts`, `config.ts`, `ids.ts` | The proxy, config loading, connection id prefixing. |
+| `index.server.ts` | Daemon entry: starts the proxy, answers the status, pairing and change RPCs. |
+| `server/proxy.ts`, `config.ts`, `ids.ts` | The proxy, config loading and saving, connection id prefixing. |
+| `server/priority.ts` | The pure rules for which relays to keep registered in Preferred mode. |
+| `server/relays.ts`, `actions.ts` | Validating an added relay, changing the preference, removing a relay, and committing the result. |
 | `server/pairing.ts`, `status.ts` | Per-relay pairing links (public data only), status for the screen. |
-| `shared/status.ts` | The two RPC contracts, shared by both sides. |
+| `shared/status.ts`, `relay-input.ts` | The RPC contracts and the address rules shared by both sides. |
 | `index.client.tsx` | App entry: the screen, the sidebar row, the Command Center item. |
 | `client/view-model.ts` | The wording and colour rules for each state (unit tested, no React). |
 | `client/*.tsx` | The screen, the sidebar row and the status dot. |
