@@ -22,6 +22,13 @@ export const fastTiming: Partial<Timing> = {
   readyWarnMs: 500,
   latencyMinIntervalMs: 40,
   latencyTimeoutMs: 800,
+  // The preferred-relay rules, shrunk so a whole failure and recovery fits in a few seconds.
+  graceMs: 700,
+  failoverAfterMs: 150,
+  stableMs: 300,
+  retestMs: 900,
+  settleMs: 250,
+  reconcileIntervalMs: 30,
 };
 
 export async function waitFor(
@@ -105,6 +112,10 @@ export class FakeRelay {
    * `answerPings: false` models a relay that never replies to protocol pings, which nothing
    * obliges a relay to do on a data socket.
    */
+  /** How many times something tried to register as the server, whether or not it was let in. */
+  controlAttempts = 0;
+  /** Drop every attempt to register as the server, as a relay that is up but broken would. */
+  refuseControl = false;
   /** How long GET /health takes to answer, and with which status. */
   healthDelayMs = 0;
   healthStatus = 200;
@@ -139,6 +150,13 @@ export class FakeRelay {
       const url = new URL(request.url ?? "/", "http://relay.test");
       const role = url.searchParams.get("role");
       const connectionId = url.searchParams.get("connectionId");
+      if (role === "server" && !connectionId) {
+        this.controlAttempts += 1;
+        if (this.refuseControl) {
+          socket.destroy();
+          return;
+        }
+      }
       const accept = () =>
         this.wss.handleUpgrade(request, socket, head, (ws) => {
           if (role === "server" && !connectionId) this.attachControl(ws);

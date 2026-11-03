@@ -23,6 +23,18 @@ const latencySchema = z.object({
   error: z.string().nullable(),
 });
 
+export const roleSchema = z.enum(["active", "connecting", "standby", "down"]);
+
+const priorityStatusSchema = z.object({
+  /**
+   * active: registered and serving. connecting: registered, not serving yet. standby: not
+   * registered, by choice. down: given up on, to be tried again at `nextRetestAt`.
+   */
+  role: roleSchema,
+  preferred: z.boolean(),
+  nextRetestAt: z.string().nullable(),
+});
+
 const upstreamStatusSchema = z.object({
   name: z.string(),
   endpoint: z.string(),
@@ -34,6 +46,12 @@ const upstreamStatusSchema = z.object({
   dataSockets: z.number(),
   /** Optional so a newer screen still works against an older plugin and the reverse. */
   latency: latencySchema.optional(),
+  priority: priorityStatusSchema.optional(),
+});
+
+export const preferenceSchema = z.object({
+  mode: z.enum(["auto", "preferred"]),
+  preferred: z.string().nullable(),
 });
 
 /** Live state of the proxy, as the sidebar and the screen show it. */
@@ -47,6 +65,10 @@ export const statusRpc = defineRpc({
     daemonConnected: z.boolean(),
     serverId: z.string().nullable(),
     upstreams: z.array(upstreamStatusSchema),
+    /** Which relay is preferred; "auto" keeps every relay open. Optional for older plugins. */
+    preference: preferenceSchema.optional(),
+    /** The preferred relay is not serving, so the others are up in its place. */
+    fallbackActive: z.boolean().optional(),
     configPath: z.string(),
     configSource: z.enum(["file", "default"]),
   }),
@@ -68,9 +90,44 @@ export const pairingRpc = defineRpc({
   ]),
 });
 
+/**
+ * The outcome of a change. A refusal is an ordinary answer with a message the screen can show next to
+ * the field, rather than an error thrown through the plugin channel.
+ */
+const resultSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), name: z.string().optional() }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+/** Prefer one relay, or go back to Auto. */
+export const preferenceRpc = defineRpc({
+  name: "relay-fanout.preference",
+  input: z.discriminatedUnion("mode", [
+    z.object({ mode: z.literal("auto") }),
+    z.object({ mode: z.literal("preferred"), preferred: z.string() }),
+  ]),
+  output: resultSchema,
+});
+
+/** Add a relay from a pasted address. The name is optional and is made up from the address if left out. */
+export const addRelayRpc = defineRpc({
+  name: "relay-fanout.add-relay",
+  input: z.object({ address: z.string(), name: z.string().optional() }),
+  output: resultSchema,
+});
+
+export const removeRelayRpc = defineRpc({
+  name: "relay-fanout.remove-relay",
+  input: z.object({ name: z.string() }),
+  output: resultSchema,
+});
+
 export type PluginStatus = z.output<typeof statusRpc.output>;
 export type UpstreamView = PluginStatus["upstreams"][number];
 export type UpstreamState = z.output<typeof upstreamStateSchema>;
 export type UpstreamLatencyView = NonNullable<UpstreamView["latency"]>;
 export type LatencyStatView = UpstreamLatencyView["request"];
+export type UpstreamPriorityView = NonNullable<UpstreamView["priority"]>;
+export type PreferenceView = z.output<typeof preferenceSchema>;
 export type PairingResult = z.output<typeof pairingRpc.output>;
+export type ActionResult = z.output<typeof resultSchema>;

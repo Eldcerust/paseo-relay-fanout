@@ -10,6 +10,7 @@ import type { ProxyStatus } from "../server/proxy";
 import { EMPTY_STAT } from "../server/latency";
 
 const noLatency = { request: { ...EMPTY_STAT }, ping: { ...EMPTY_STAT }, connectMs: null, error: null };
+const activePriority = { role: "active" as const, preferred: false, nextRetestAt: null };
 
 const PUBLIC_KEY = "KgDGdTYaGmRUI20FLchhDKJfl17Y2d1vGe8LhMXnv2s=";
 const SECRET_KEY = "SECRET-DO-NOT-LEAK-c2VjcmV0LWtleS1ieXRlcw==";
@@ -128,6 +129,8 @@ describe("rpc contracts", () => {
     listening: "127.0.0.1:7733",
     daemonConnected: true,
     serverId: "srv_test",
+    preference: { mode: "auto", preferred: null },
+    fallbackActive: false,
     upstreams: [
       {
         name: "official",
@@ -138,6 +141,7 @@ describe("rpc contracts", () => {
         lastError: null,
         dataSockets: 2,
         latency: noLatency,
+        priority: activePriority,
       },
       {
         name: "home",
@@ -148,6 +152,7 @@ describe("rpc contracts", () => {
         lastError: "connect ECONNREFUSED",
         dataSockets: 0,
         latency: noLatency,
+        priority: activePriority,
       },
     ],
   };
@@ -175,6 +180,8 @@ describe("status handler", () => {
     daemonConnected: false,
     serverId: null,
     upstreams: [],
+    preference: { mode: "auto", preferred: null },
+    fallbackActive: false,
   };
 
   it("refreshes the relays' latency only when the caller asks for a measurement", () => {

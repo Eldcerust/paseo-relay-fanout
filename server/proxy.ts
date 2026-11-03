@@ -6,6 +6,15 @@ import { performance } from "node:perf_hooks";
 import type { Upstream } from "./config";
 import { parsePrefixedConnectionId, prefixConnectionId } from "./ids";
 import { EMPTY_STAT, LatencyProbe, LatencyWindow, createHealthClient, type LatencyStat } from "./latency";
+import {
+  DEFAULT_PRIORITY_TIMING,
+  decide,
+  roleOf,
+  type Preference,
+  type PriorityTiming,
+  type RelayFacts,
+  type Role,
+} from "./priority";
 
 /**
  * A relay fan-out proxy.
@@ -42,9 +51,19 @@ export interface Timing {
   /** A relay's /health is requested at most this often, and only while someone asks for the status. */
   latencyMinIntervalMs: number;
   latencyTimeoutMs: number;
+  /** See PriorityTiming: when to bring up the others, give up on the preferred relay, retest it. */
+  graceMs: number;
+  failoverAfterMs: number;
+  stableMs: number;
+  retestMs: number;
+  settleMs: number;
+  /** How often the proxy re-checks which relays should be open. */
+  reconcileIntervalMs: number;
 }
 
 export const DEFAULT_TIMING: Timing = {
+  ...DEFAULT_PRIORITY_TIMING,
+  reconcileIntervalMs: 1_000,
   pingIntervalMs: 10_000,
   staleTimeoutMs: 30_000,
   reconnectBaseMs: 1_000,
@@ -60,8 +79,21 @@ export interface FanoutProxyOptions {
   host: string;
   port: number;
   upstreams: Upstream[];
+  /** Defaults to Auto: every relay open, each device picks the fastest. */
+  preference?: Preference;
   logger: Logger;
   timing?: Partial<Timing>;
+}
+
+/** What the screen needs to say about a relay's place in the preference. */
+export interface UpstreamPriority {
+  /**
+   * active: registered and serving. connecting: registered, not serving yet. standby: not registered,
+   * by choice. down: given up on, to be tried again at `nextRetestAt`.
+   */
+  role: Role;
+  preferred: boolean;
+  nextRetestAt: string | null;
 }
 
 export interface UpstreamLatency {
@@ -91,6 +123,7 @@ export interface UpstreamStatus {
   lastError: string | null;
   dataSockets: number;
   latency: UpstreamLatency;
+  priority: UpstreamPriority;
 }
 
 export interface ProxyStatus {
@@ -99,6 +132,9 @@ export interface ProxyStatus {
   daemonConnected: boolean;
   serverId: string | null;
   upstreams: UpstreamStatus[];
+  preference: Preference;
+  /** The preferred relay is not serving, so the others are up in its place. */
+  fallbackActive: boolean;
 }
 
 const LOOPBACK_HOST_HEADERS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
@@ -186,6 +222,8 @@ class UpstreamControl {
   ready = false;
   connectedAt: Date | null = null;
   lastError: string | null = null;
+  private readySince: number | null = null;
+  private unreadySince = Date.now();
 
   private ws: WebSocket | null = null;
   private stopped = false;
@@ -276,7 +314,10 @@ class UpstreamControl {
       this.lastSeenAt = Date.now();
       const message = parseControlMessage(data);
       if (!message) return;
-      this.ready = true;
+      if (!this.ready) {
+        this.ready = true;
+        this.readySince = Date.now();
+      }
       this.onMessage(this.upstream, message);
     });
 
@@ -290,7 +331,11 @@ class UpstreamControl {
       if (this.ws !== ws) return;
       this.ws = null;
       this.state = "down";
+      // Time spent unready keeps counting across failed reconnects; it restarts only when a relay
+      // that was ready drops.
+      if (this.ready) this.unreadySince = Date.now();
       this.ready = false;
+      this.readySince = null;
       if (this.pingTimer) clearInterval(this.pingTimer);
       if (this.readyTimer) clearTimeout(this.readyTimer);
       this.pingTimer = null;
@@ -309,6 +354,21 @@ class UpstreamControl {
   /** The round trip of the control socket's pings, for the status. */
   pingStat(): LatencyStat {
     return this.pingWindow.stat();
+  }
+
+  /** The average ping, used to rank relays against each other. */
+  latencyMs(): number | null {
+    return this.pingWindow.stat().avgMs;
+  }
+
+  /** What the priority rules need to know about this socket. */
+  facts(now: number): { ready: boolean; readyForMs: number | null; unreadyForMs: number | null } {
+    const ready = this.state === "connected" && this.ready;
+    return {
+      ready,
+      readyForMs: ready && this.readySince !== null ? now - this.readySince : null,
+      unreadyForMs: ready ? null : now - this.unreadySince,
+    };
   }
 
   private ping(ws: WebSocket): void {
@@ -495,25 +555,38 @@ class DataPipe {
   }
 }
 
-/** The daemon's control connection, fanned out to one upstream control per relay. */
+/** What the control session needs to know about the proxy's relays, which can change while it runs. */
+interface RelaySource {
+  upstreams(): Upstream[];
+  preference(): Preference;
+  /** The request round trip, used to rank a relay that has no ping yet. */
+  requestLatencyMs(name: string): number | null;
+}
+
+/**
+ * The daemon's control connection, fanned out to the relays that should be open right now.
+ *
+ * Which relays those are is decided by `decide()` (see priority.ts) and re-checked every second.
+ * Opening a relay registers the daemon with it; closing one only stops new connections arriving
+ * through it. Sessions already running through a relay that is closed keep running until their
+ * phone leaves, which is what lets the app move over by itself without a hard cut.
+ */
 class ControlSession {
-  readonly upstreams: UpstreamControl[];
+  private readonly controls = new Map<string, UpstreamControl>();
+  /** Relays given up on, with the time they are tried again. */
+  private readonly retestAt = new Map<string, number>();
+  private fallbackActive = false;
+  private reconcileTimer: NodeJS.Timeout | null = null;
+  private closed = false;
 
   constructor(
     readonly daemonWs: WebSocket,
     readonly serverId: string,
-    upstreams: Upstream[],
+    private readonly source: RelaySource,
     private readonly timing: Timing,
     private readonly logger: Logger,
     private readonly onClosed: (session: ControlSession) => void,
-  ) {
-    this.upstreams = upstreams.map(
-      (upstream) =>
-        new UpstreamControl(upstream, serverId, timing, logger, (source, message) =>
-          this.fromUpstream(source, message),
-        ),
-    );
-  }
+  ) {}
 
   start(): void {
     this.daemonWs.on("message", (data) => {
@@ -526,23 +599,125 @@ class ControlSession {
     });
     this.daemonWs.on("close", (code, reason) => {
       this.logger.info("daemon control disconnected", { code, reason: reason.toString() });
-      this.stopUpstreams();
+      this.shutdown();
       this.onClosed(this);
     });
 
     // The daemon drops a control socket that stays silent for 8s. An empty sync is a
     // no-op for it, and it keeps the daemon connected while the relays are still dialing.
     this.sendToDaemon({ type: "sync", connectionIds: [] });
-    for (const upstream of this.upstreams) upstream.start();
+    this.reconcile();
+    this.reconcileTimer = setInterval(() => this.reconcile(), this.timing.reconcileIntervalMs);
   }
 
   close(code: number, reason: string): void {
     closeQuietly(this.daemonWs, code, reason);
-    this.stopUpstreams();
+    this.shutdown();
   }
 
-  private stopUpstreams(): void {
-    for (const upstream of this.upstreams) upstream.stop();
+  /** Whether the others are up because the preferred relay is not serving. */
+  get fallback(): boolean {
+    return this.fallbackActive;
+  }
+
+  controlFor(name: string): UpstreamControl | undefined {
+    return this.controls.get(name);
+  }
+
+  nextRetestAt(name: string): number | null {
+    return this.retestAt.get(name) ?? null;
+  }
+
+  factsFor(upstream: Upstream, now: number): RelayFacts {
+    const control = this.controls.get(upstream.name);
+    const state = control?.facts(now);
+    return {
+      name: upstream.name,
+      registered: control !== undefined,
+      ready: state?.ready ?? false,
+      readyForMs: state?.readyForMs ?? null,
+      unreadyForMs: state?.unreadyForMs ?? null,
+      nextRetestAt: this.retestAt.get(upstream.name) ?? null,
+      latencyMs: control?.latencyMs() ?? this.source.requestLatencyMs(upstream.name),
+    };
+  }
+
+  /** Make the set of open relays match what the rules say it should be. Safe to call at any time. */
+  reconcile(now = Date.now()): void {
+    if (this.closed) return;
+    const upstreams = this.source.upstreams();
+    const preference = this.source.preference();
+    const names = new Set(upstreams.map((upstream) => upstream.name));
+
+    // A relay taken out of the list is closed at once.
+    for (const [name, control] of this.controls) {
+      if (names.has(name)) continue;
+      control.stop();
+      this.controls.delete(name);
+    }
+    // Only the preferred relay is ever "given up on"; a leftover mark would mislabel it after the preference moves.
+    for (const name of [...this.retestAt.keys()]) {
+      if (!names.has(name) || preference.mode !== "preferred" || preference.preferred !== name) this.retestAt.delete(name);
+    }
+    // A relay that is serving again is no longer down.
+    for (const name of [...this.retestAt.keys()]) {
+      if (this.controls.get(name)?.facts(now).ready) this.retestAt.delete(name);
+    }
+
+    const decision = decide({
+      now,
+      preference,
+      relays: upstreams.map((upstream) => this.factsFor(upstream, now)),
+      fallbackActive: this.fallbackActive,
+      timing: this.priorityTiming(),
+    });
+    this.fallbackActive = decision.fallbackActive;
+
+    if (decision.declareDown) {
+      const name = decision.declareDown;
+      this.controls.get(name)?.stop();
+      this.controls.delete(name);
+      this.retestAt.set(name, now + this.timing.retestMs);
+      this.logger.warn("preferred relay is not serving; trying it again later", {
+        upstream: name,
+        retestInMs: this.timing.retestMs,
+      });
+    }
+
+    const wanted = new Set(decision.register);
+    for (const upstream of upstreams) {
+      const open = this.controls.has(upstream.name);
+      if (wanted.has(upstream.name) && !open) this.open(upstream);
+      else if (!wanted.has(upstream.name) && open) this.standBy(upstream.name);
+    }
+  }
+
+  private priorityTiming(): PriorityTiming {
+    const { graceMs, failoverAfterMs, stableMs, retestMs, settleMs } = this.timing;
+    return { graceMs, failoverAfterMs, stableMs, retestMs, settleMs };
+  }
+
+  private open(upstream: Upstream): void {
+    const control = new UpstreamControl(upstream, this.serverId, this.timing, this.logger, (source, message) =>
+      this.fromUpstream(source, message),
+    );
+    this.controls.set(upstream.name, control);
+    control.start();
+  }
+
+  /** Stop registering with a relay. Sessions already running through it are left alone. */
+  private standBy(name: string): void {
+    this.controls.get(name)?.stop();
+    this.controls.delete(name);
+    this.logger.info("relay on standby", { upstream: name });
+  }
+
+  private shutdown(): void {
+    this.closed = true;
+    if (this.reconcileTimer) clearInterval(this.reconcileTimer);
+    this.reconcileTimer = null;
+    for (const control of this.controls.values()) control.stop();
+    this.controls.clear();
   }
 
   private sendToDaemon(message: Record<string, unknown>): void {
@@ -557,7 +732,7 @@ class ControlSession {
   private fromUpstream(source: Upstream, message: ControlMessage): void {
     switch (message.type) {
       case "ping":
-        this.upstreams.find((entry) => entry.upstream === source)?.sendPong();
+        this.controls.get(source.name)?.sendPong();
         return;
       case "pong":
         return;
@@ -586,19 +761,16 @@ export class FanoutProxy {
   private readonly upstreamsByName = new Map<string, Upstream>();
   private readonly pipes = new Set<DataPipe>();
   private readonly probes = new Map<string, LatencyProbe>();
+  private upstreams: Upstream[] = [];
+  private preference: Preference;
   private control: ControlSession | null = null;
   private boundAddress: AddressInfo | null = null;
 
   constructor(private readonly options: FanoutProxyOptions) {
     this.timing = { ...DEFAULT_TIMING, ...options.timing };
     this.logger = options.logger;
-    for (const upstream of options.upstreams) {
-      this.upstreamsByName.set(upstream.name, upstream);
-      this.probes.set(
-        upstream.name,
-        new LatencyProbe(createHealthClient(upstream, this.timing.latencyTimeoutMs), this.timing.latencyMinIntervalMs),
-      );
-    }
+    this.preference = options.preference ?? { mode: "auto", preferred: null };
+    this.addUpstreams(options.upstreams);
 
     this.wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
     this.httpServer = http.createServer((request, response) => this.handleHttp(request, response));
@@ -633,6 +805,47 @@ export class FanoutProxy {
     for (const probe of this.probes.values()) probe.sampleIfDue();
   }
 
+  /**
+   * Change the relay list or the preference while running. A relay that is gone has its running
+   * sessions closed. One that is new is picked up by the next check of which relays should be open,
+   * which is made straight away.
+   */
+  applyConfig(next: { upstreams: Upstream[]; preference: Preference }): void {
+    const current = new Map(this.upstreams.map((upstream) => [upstream.name, upstream]));
+    // A relay whose name, address and TLS flag are unchanged keeps its object, and with it its probe history.
+    const kept = next.upstreams.map((upstream) => {
+      const existing = current.get(upstream.name);
+      return existing && existing.endpoint === upstream.endpoint && existing.useTls === upstream.useTls ? existing : upstream;
+    });
+    for (const old of this.upstreams) {
+      if (!kept.includes(old)) this.dropUpstream(old.name);
+    }
+    this.addUpstreams(kept.filter((upstream) => !this.upstreams.includes(upstream)));
+    this.upstreams = kept;
+    this.preference = next.preference;
+    this.control?.reconcile();
+  }
+
+  private addUpstreams(added: Upstream[]): void {
+    for (const upstream of added) {
+      this.upstreamsByName.set(upstream.name, upstream);
+      this.probes.set(
+        upstream.name,
+        new LatencyProbe(createHealthClient(upstream, this.timing.latencyTimeoutMs), this.timing.latencyMinIntervalMs),
+      );
+    }
+    this.upstreams = [...this.upstreams, ...added];
+  }
+
+  private dropUpstream(name: string): void {
+    this.probes.get(name)?.close();
+    this.probes.delete(name);
+    this.upstreamsByName.delete(name);
+    for (const pipe of [...this.pipes]) {
+      if (pipe.upstream.name === name) pipe.close(1001, "Relay removed");
+    }
+  }
+
   async stop(): Promise<void> {
     for (const probe of this.probes.values()) probe.close();
     this.control?.close(1001, "Proxy stopping");
@@ -649,14 +862,19 @@ export class FanoutProxy {
 
   status(): ProxyStatus {
     const control = this.control;
+    const now = Date.now();
+    const preferredName = this.preference.mode === "preferred" ? this.preference.preferred : null;
     return {
       status: "ok",
       listening: `${this.options.host}:${this.port}`,
       daemonConnected: control !== null,
       serverId: control?.serverId ?? null,
-      upstreams: this.options.upstreams.map((upstream) => {
-        const entry = control?.upstreams.find((candidate) => candidate.upstream === upstream);
+      preference: this.preference,
+      fallbackActive: control?.fallback ?? false,
+      upstreams: this.upstreams.map((upstream) => {
+        const entry = control?.controlFor(upstream.name);
         const probe = this.probes.get(upstream.name)?.snapshot();
+        const retestAt = control?.nextRetestAt(upstream.name) ?? null;
         return {
           name: upstream.name,
           endpoint: upstream.endpoint,
@@ -664,12 +882,17 @@ export class FanoutProxy {
           ready: entry?.ready ?? false,
           connectedAt: entry?.connectedAt?.toISOString() ?? null,
           lastError: entry?.lastError ?? null,
-          dataSockets: [...this.pipes].filter((pipe) => pipe.upstream === upstream).length,
+          dataSockets: [...this.pipes].filter((pipe) => pipe.upstream.name === upstream.name).length,
           latency: {
             request: probe?.request ?? { ...EMPTY_STAT },
             ping: entry?.pingStat() ?? { ...EMPTY_STAT },
             connectMs: probe?.connectMs ?? null,
             error: probe?.error ?? null,
+          },
+          priority: {
+            role: control ? roleOf(control.factsFor(upstream, now)) : "standby",
+            preferred: upstream.name === preferredName,
+            nextRetestAt: retestAt !== null ? new Date(retestAt).toISOString() : null,
           },
         };
       }),
@@ -745,7 +968,12 @@ export class FanoutProxy {
   private acceptControl(ws: WebSocket, serverId: string): void {
     // Same rule as a real relay: one control socket per server, the newest wins.
     this.control?.close(1008, "Replaced by new connection");
-    const session = new ControlSession(ws, serverId, this.options.upstreams, this.timing, this.logger, (closed) => {
+    const source: RelaySource = {
+      upstreams: () => this.upstreams,
+      preference: () => this.preference,
+      requestLatencyMs: (name) => this.probes.get(name)?.snapshot().request.avgMs ?? null,
+    };
+    const session = new ControlSession(ws, serverId, source, this.timing, this.logger, (closed) => {
       if (this.control === closed) this.control = null;
     });
     this.control = session;

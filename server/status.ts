@@ -8,8 +8,9 @@ export interface StatusMeta {
 
 /** The proxy's own status plus where its configuration came from. */
 export function buildStatus(proxy: { status(): ProxyStatus }, meta: StatusMeta): PluginStatus {
-  const { listening, daemonConnected, serverId, upstreams } = proxy.status();
-  return { listening, daemonConnected, serverId, upstreams, ...meta };
+  const { listening, daemonConnected, serverId, upstreams, preference, fallbackActive } = proxy.status();
+  // `meta` is read here, not captured, because saving a change turns "default" into "file".
+  return { listening, daemonConnected, serverId, upstreams, preference, fallbackActive, ...meta };
 }
 
 /**

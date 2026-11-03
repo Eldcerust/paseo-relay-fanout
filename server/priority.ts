@@ -43,6 +43,11 @@ export interface PriorityTiming {
   stableMs: number;
   /** How often a relay that was given up on is tried again. */
   retestMs: number;
+  /**
+   * When several fallbacks are ready at once, wait this long for each to be measured before choosing.
+   * A fallback that is stood down can no longer be measured, so choosing too early could lock in the wrong one.
+   */
+  settleMs: number;
 }
 
 export const DEFAULT_PRIORITY_TIMING: PriorityTiming = {
@@ -50,6 +55,7 @@ export const DEFAULT_PRIORITY_TIMING: PriorityTiming = {
   failoverAfterMs: 3_000,
   stableMs: 15_000,
   retestMs: 120_000,
+  settleMs: 2_000,
 };
 
 export interface Decision {
@@ -101,7 +107,12 @@ export function decide(input: {
 
   if (fallbackActive) {
     const readyOthers = others.filter((relay) => relay.ready).sort(byLatency);
-    if (readyOthers.length > 0) {
+    // Several fallbacks, and one has not been measured yet: keep them all until it has, or until it has
+    // had long enough that "no answer" is itself the measurement.
+    const settling = readyOthers.length > 1 && readyOthers.some((relay) => relay.latencyMs === null && (relay.readyForMs ?? 0) < timing.settleMs);
+    if (settling) {
+      for (const relay of readyOthers) register.add(relay.name);
+    } else if (readyOthers.length > 0) {
       register.add(readyOthers[0]!.name);
     } else if (!preferred.ready) {
       for (const relay of others) register.add(relay.name); // nothing serves yet: try them all
