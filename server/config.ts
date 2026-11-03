@@ -1,12 +1,14 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import { ENDPOINT_PATTERN, MAX_RELAYS, RELAY_NAME_PATTERN } from "../shared/relay-input";
+import type { Preference } from "./priority";
 
 export const PLUGIN_ID = "relay-fanout";
 export const DEFAULT_LISTEN_HOST = "127.0.0.1";
 export const DEFAULT_LISTEN_PORT = 7733;
-export const MAX_UPSTREAMS = 8;
+export const MAX_UPSTREAMS = MAX_RELAYS;
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -21,6 +23,8 @@ export interface Upstream {
 export interface FanoutConfig {
   listen: { host: string; port: number };
   upstreams: Upstream[];
+  /** Which relay to prefer; "auto" keeps every relay open and lets each device pick. */
+  preference: Preference;
 }
 
 export interface LoadedConfig {
@@ -29,12 +33,8 @@ export interface LoadedConfig {
   path: string;
 }
 
-const ENDPOINT_PATTERN = /^(\[[0-9a-fA-F:.]+\]|[^\s:/[\]]+):(\d{1,5})$/;
-
 const upstreamSchema = z.object({
-  name: z
-    .string()
-    .regex(/^[a-z0-9][a-z0-9-]{0,23}$/, "use 1-24 lowercase letters, digits or dashes"),
+  name: z.string().regex(RELAY_NAME_PATTERN, "use 1-24 lowercase letters, digits or dashes"),
   endpoint: z
     .string()
     .trim()
@@ -50,6 +50,12 @@ const configSchema = z.object({
     })
     .optional(),
   upstreams: z.array(upstreamSchema).min(1).max(MAX_UPSTREAMS),
+  preference: z
+    .object({
+      mode: z.enum(["auto", "preferred"]),
+      preferred: z.string().optional(),
+    })
+    .optional(),
 });
 
 export const DEFAULT_UPSTREAMS: Upstream[] = [
@@ -103,7 +109,48 @@ export function parseConfig(raw: unknown): FanoutConfig {
     };
   });
 
-  return { listen: { host, port: parsed.data.listen?.port ?? DEFAULT_LISTEN_PORT }, upstreams };
+  const preference = parsed.data.preference;
+  let resolved: Preference = { mode: "auto", preferred: null };
+  if (preference?.mode === "preferred") {
+    if (!preference.preferred || !seen.has(preference.preferred)) {
+      throw new Error(
+        `Invalid relay-fanout config: preference.preferred must name one of the relays (${[...seen].join(", ")}), got ${JSON.stringify(preference.preferred ?? null)}`,
+      );
+    }
+    resolved = { mode: "preferred", preferred: preference.preferred };
+  }
+
+  return { listen: { host, port: parsed.data.listen?.port ?? DEFAULT_LISTEN_PORT }, upstreams, preference: resolved };
+}
+
+/** The file's contents for a config. Stable key order so the file reads the same every time. */
+export function serializeConfig(config: FanoutConfig): string {
+  const preference =
+    config.preference.mode === "preferred"
+      ? { mode: "preferred", preferred: config.preference.preferred }
+      : { mode: "auto" };
+  return (
+    JSON.stringify(
+      {
+        listen: { host: config.listen.host, port: config.listen.port },
+        upstreams: config.upstreams.map(({ name, endpoint, useTls }) => ({ name, endpoint, useTls })),
+        preference,
+      },
+      null,
+      2,
+    ) + "\n"
+  );
+}
+
+/**
+ * Write the config next to where it is read from. Written to a temporary file and renamed into
+ * place, so a crash cannot leave a half-written file that stops the plugin from loading.
+ */
+export function saveConfig(configPath: string, config: FanoutConfig): void {
+  mkdirSync(path.dirname(configPath), { recursive: true });
+  const temporary = `${configPath}.tmp-${process.pid}`;
+  writeFileSync(temporary, serializeConfig(config), "utf8");
+  renameSync(temporary, configPath);
 }
 
 /** Read the config file; a missing file means "official relay only". */
