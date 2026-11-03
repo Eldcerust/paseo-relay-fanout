@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { pairingRpc, statusRpc } from "../shared/status";
 
 export const PAIRING_QUERY_KEY = ["relay-fanout", "pairing"] as const;
+export const STATUS_QUERY_PREFIX = ["relay-fanout", "status"] as const;
 
 /**
  * `measure` is true only for the open screen. It asks the plugin to refresh each relay's latency,
@@ -12,7 +13,7 @@ export const PAIRING_QUERY_KEY = ["relay-fanout", "pairing"] as const;
 export function useFanoutStatus(refetchIntervalMs: number, measure = false) {
   const readStatus = useRpc(statusRpc);
   return useQuery({
-    queryKey: ["relay-fanout", "status", measure] as const,
+    queryKey: [...STATUS_QUERY_PREFIX, measure] as const,
     queryFn: () => readStatus({ measure }),
     refetchInterval: refetchIntervalMs,
     retry: false,

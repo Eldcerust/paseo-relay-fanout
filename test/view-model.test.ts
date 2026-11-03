@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { PluginStatus, UpstreamView } from "../shared/status";
-import { READY_GRACE_MS, describeLatency, describeUpstream, formatMs, formatSince, summarize } from "../client/view-model";
+import type { PluginStatus, UpstreamPriorityView, UpstreamView } from "../shared/status";
+import {
+  READY_GRACE_MS,
+  describeLatency,
+  describeUpstream,
+  formatMs,
+  formatSince,
+  formatUntil,
+  summarize,
+} from "../client/view-model";
 import { EMPTY_STAT } from "../server/latency";
 import type { UpstreamLatencyView } from "../shared/status";
 
@@ -41,6 +49,18 @@ function status(upstreams: UpstreamView[], overrides: Partial<PluginStatus> = {}
   };
 }
 
+function priority(overrides: Partial<UpstreamPriorityView> = {}): UpstreamPriorityView {
+  return { role: "active", preferred: false, nextRetestAt: null, ...overrides };
+}
+
+function preferredStatus(upstreams: UpstreamView[], overrides: Partial<PluginStatus> = {}): PluginStatus {
+  return status(upstreams, {
+    preference: { mode: "preferred", preferred: "home" },
+    fallbackActive: false,
+    ...overrides,
+  });
+}
+
 describe("formatSince", () => {
   it.each([
     [2_000, "just now"],
@@ -58,6 +78,24 @@ describe("formatSince", () => {
     expect(formatSince(null, NOW)).toBeNull();
     expect(formatSince("not a date", NOW)).toBeNull();
     expect(formatSince(new Date(NOW + 60_000).toISOString(), NOW)).toBe("just now");
+  });
+});
+
+describe("formatUntil", () => {
+  it.each([
+    [5_000, "in 5s"],
+    [59_400, "in 1m"],
+    [60_000, "in 1m"],
+    [119_000, "in 2m"],
+    [3_600_000, "in 1h"],
+  ])("renders %d ms ahead as %s", (ms, expected) => {
+    expect(formatUntil(new Date(NOW + ms).toISOString(), NOW)).toBe(expected);
+  });
+
+  it("says any moment for a time that has passed, and null when there is no usable time", () => {
+    expect(formatUntil(new Date(NOW - 1_000).toISOString(), NOW)).toBe("any moment");
+    expect(formatUntil(null, NOW)).toBeNull();
+    expect(formatUntil("not a date", NOW)).toBeNull();
   });
 });
 
@@ -100,6 +138,45 @@ describe("describeUpstream", () => {
     expect(describeUpstream(upstream({ state: "idle", ready: false }), NOW)).toMatchObject({
       label: "Not registered",
       tone: "idle",
+    });
+  });
+
+  it("calls a relay left out by preference standby, not a failure", () => {
+    const standby = upstream({ state: "idle", ready: false, priority: priority({ role: "standby" }) });
+    expect(describeUpstream(standby, NOW)).toEqual({
+      label: "Standby",
+      tone: "idle",
+      detail: "Closed while the preferred relay serves. It opens if that relay fails.",
+    });
+  });
+
+  it("gives a relay that was given up on its next retry time", () => {
+    const down = upstream({
+      state: "idle",
+      ready: false,
+      priority: priority({ role: "down", preferred: true, nextRetestAt: new Date(NOW + 90_000).toISOString() }),
+    });
+    expect(describeUpstream(down, NOW)).toEqual({
+      label: "Retrying",
+      tone: "bad",
+      detail: "Next try in 2m.",
+    });
+  });
+
+  it("marks the preferred relay and the fallback in the detail line", () => {
+    const preferred = upstream({ priority: priority({ preferred: true }) });
+    expect(describeUpstream(preferred, NOW).detail).toBe("Preferred · Up for 1m · no sessions");
+    const fallback = upstream({ priority: priority() });
+    expect(describeUpstream(fallback, NOW, { fallbackActive: true }).detail).toBe("Fallback · Up for 1m · no sessions");
+    expect(describeUpstream(fallback, NOW, { fallbackActive: false }).detail).toBe("Up for 1m · no sessions");
+  });
+
+  it("does not call a relay standby when the daemon itself is not connected", () => {
+    const idle = upstream({ state: "idle", ready: false, priority: priority({ role: "standby", preferred: true }) });
+    expect(describeUpstream(idle, NOW, { daemonConnected: false })).toEqual({
+      label: "Not registered",
+      tone: "idle",
+      detail: "The daemon is not connected to the proxy.",
     });
   });
 });
@@ -151,6 +228,88 @@ describe("summarize", () => {
   it("does not count a connected but silent relay as healthy", () => {
     const silent = status([upstream({ ready: false, connectedAt: ago(READY_GRACE_MS + 5_000) })]);
     expect(summarize(silent, false, NOW)).toMatchObject({ tone: "bad", title: "No relay connected" });
+  });
+
+  it("is green when the preferred relay serves and the others stand by", () => {
+    const preferred = preferredStatus([
+      upstream({ priority: priority({ role: "standby" }) }),
+      upstream({ name: "home", endpoint: "paseo.example.com:443", priority: priority({ preferred: true }) }),
+    ]);
+    expect(summarize(preferred, false, NOW)).toEqual({
+      tone: "ok",
+      title: "Preferred relay home connected",
+      detail: "The other relays are standing by and open only if it fails.",
+    });
+  });
+
+  it("names the fallback while the preferred relay is unavailable", () => {
+    const fallingBack = preferredStatus(
+      [
+        upstream({ priority: priority() }),
+        upstream({ name: "home", state: "idle", ready: false, priority: priority({ role: "down", preferred: true, nextRetestAt: new Date(NOW + 60_000).toISOString() }) }),
+      ],
+      { fallbackActive: true },
+    );
+    expect(summarize(fallingBack, false, NOW)).toEqual({
+      tone: "warn",
+      title: "Using fallback relay official",
+      detail: "home is unavailable. It is retried every 2 minutes.",
+    });
+  });
+
+  it("says a preferred relay is down when no fallback serves either", () => {
+    const none = preferredStatus([
+      upstream({ priority: priority({ role: "standby" }) }),
+      upstream({
+        name: "home",
+        state: "idle",
+        ready: false,
+        priority: priority({ role: "down", preferred: true, nextRetestAt: new Date(NOW + 30_000).toISOString() }),
+      }),
+    ]);
+    expect(summarize(none, false, NOW)).toEqual({
+      tone: "bad",
+      title: "Preferred relay home is down",
+      detail: "No fallback is serving either. Next try in 30s.",
+    });
+  });
+
+  it("waits for a preferred relay that is still connecting", () => {
+    const starting = preferredStatus([
+      upstream({ priority: priority({ role: "standby" }) }),
+      upstream({ name: "home", state: "connecting", ready: false, priority: priority({ preferred: true }) }),
+    ]);
+    expect(summarize(starting, false, NOW)).toEqual({
+      tone: "warn",
+      title: "Waiting for home",
+      detail: "The fallbacks open if it does not answer.",
+    });
+  });
+
+  it("notes that the fallbacks are still closing after the preferred relay returns", () => {
+    const returning = preferredStatus(
+      [
+        upstream({ priority: priority() }),
+        upstream({ name: "home", endpoint: "paseo.example.com:443", priority: priority({ preferred: true }) }),
+      ],
+      { fallbackActive: true },
+    );
+    expect(summarize(returning, false, NOW)).toMatchObject({
+      tone: "ok",
+      title: "Preferred relay home connected",
+      detail: "The fallbacks stay open until it has been stable for a few more seconds.",
+    });
+  });
+
+  it("flags a saved preference that names no current relay", () => {
+    const stale = preferredStatus(
+      [upstream({ priority: priority({ role: "standby" }) })],
+      { preference: { mode: "preferred", preferred: "gone" } },
+    );
+    expect(summarize(stale, false, NOW)).toMatchObject({
+      tone: "bad",
+      title: "Preferred relay is not in the list",
+    });
   });
 });
 

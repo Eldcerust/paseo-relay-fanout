@@ -32,6 +32,19 @@ export function formatSince(iso: string | null, now: number): string | null {
   return `${Math.floor(hours / 24)}d`;
 }
 
+/** "in 45s", "in 2m", "in 1h". Null when there is no usable time or it has already passed. */
+export function formatUntil(iso: string | null, now: number): string | null {
+  if (!iso) return null;
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return null;
+  const seconds = Math.ceil((then - now) / 1000);
+  if (seconds <= 0) return "any moment";
+  if (seconds < 60) return `in ${seconds}s`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `in ${minutes}m`;
+  return `in ${Math.ceil(minutes / 60)}h`;
+}
+
 function plural(count: number, one: string, many = `${one}s`): string {
   return `${count} ${count === 1 ? one : many}`;
 }
@@ -111,8 +124,44 @@ export function describeLatency(latency: UpstreamLatencyView | undefined): Laten
   return { rows, error: request.lastOk === false ? latency.error : null, note };
 }
 
+/** Context the screen knows but a single relay's status does not. */
+export interface UpstreamContext {
+  /** The daemon is talking to the proxy. When false, a standby role is not a choice. */
+  daemonConnected?: boolean;
+  /** The preferred relay is unavailable, so the others are serving in its place. */
+  fallbackActive?: boolean;
+}
+
 /** The one-line state of a single relay. */
-export function describeUpstream(upstream: UpstreamView, now: number): UpstreamLine {
+export function describeUpstream(upstream: UpstreamView, now: number, context: UpstreamContext = {}): UpstreamLine {
+  const connected = context.daemonConnected ?? true;
+  const priority = upstream.priority;
+
+  // A relay left out on purpose must not read like one that failed.
+  if (priority && connected) {
+    if (priority.role === "standby") {
+      return {
+        label: "Standby",
+        tone: "idle",
+        detail: "Closed while the preferred relay serves. It opens if that relay fails.",
+      };
+    }
+    if (priority.role === "down") {
+      const when = formatUntil(priority.nextRetestAt, now);
+      const reason = upstream.lastError ? `${upstream.lastError}. ` : "";
+      return { label: "Retrying", tone: "bad", detail: `${reason}Next try ${when ?? "shortly"}.` };
+    }
+  }
+
+  const line = describeState(upstream, now);
+  if (!priority || !connected) return line;
+
+  const tag = priority.preferred ? "Preferred" : context.fallbackActive ? "Fallback" : null;
+  if (!tag) return line;
+  return { ...line, detail: line.detail ? `${tag} · ${line.detail}` : tag };
+}
+
+function describeState(upstream: UpstreamView, now: number): UpstreamLine {
   switch (upstream.state) {
     case "connected": {
       const since = formatSince(upstream.connectedAt, now);
@@ -168,6 +217,10 @@ export function summarize(status: PluginStatus | undefined, unreachable: boolean
     };
   }
 
+  if (status.preference?.mode === "preferred") {
+    return summarizePreferred(status, status.preference.preferred, now);
+  }
+
   const total = status.upstreams.length;
   const lines = status.upstreams.map((upstream) => describeUpstream(upstream, now));
   const healthy = lines.filter((line) => line.tone === "ok").length;
@@ -183,4 +236,64 @@ export function summarize(status: PluginStatus | undefined, unreachable: boolean
     return { tone: "bad", title: "No relay connected", detail: `Not connected: ${missing}.` };
   }
   return { tone: "warn", title: `${healthy} of ${total} relays connected`, detail: `Not connected: ${missing}.` };
+}
+
+/**
+ * In preferred mode most relays are meant to be closed, so counting "connected" relays would show a
+ * permanent warning. What matters is whether the preferred relay is serving, and if not, whether a
+ * fallback took over.
+ */
+function summarizePreferred(status: PluginStatus, preferredName: string | null, now: number): Summary {
+  const preferred =
+    status.upstreams.find((upstream) => upstream.name === preferredName) ??
+    status.upstreams.find((upstream) => upstream.priority?.preferred);
+  if (!preferred) {
+    const names = status.upstreams.map((upstream) => upstream.name).join(", ");
+    return {
+      tone: "bad",
+      title: "Preferred relay is not in the list",
+      detail: `Configured preference "${preferredName ?? "none"}", but the relays are ${names}. Pick a relay again.`,
+    };
+  }
+
+  const fallbacks = status.upstreams.filter(
+    (upstream) => upstream.name !== preferred.name && upstream.priority?.role === "active",
+  );
+  const total = status.upstreams.length;
+
+  if (preferred.ready) {
+    return {
+      tone: "ok",
+      title: `Preferred relay ${preferred.name} connected`,
+      detail: status.fallbackActive
+        ? "The fallbacks stay open until it has been stable for a few more seconds."
+        : total > 1
+          ? "The other relays are standing by and open only if it fails."
+          : null,
+    };
+  }
+
+  if (fallbacks.length > 0) {
+    const names = fallbacks.map((upstream) => upstream.name).join(", ");
+    return {
+      tone: "warn",
+      title: fallbacks.length === 1 ? `Using fallback relay ${names}` : `Using ${fallbacks.length} fallback relays`,
+      detail: `${preferred.name} is unavailable. It is retried every 2 minutes.`,
+    };
+  }
+
+  if (preferred.priority?.role === "down") {
+    const when = formatUntil(preferred.priority.nextRetestAt, now);
+    return {
+      tone: "bad",
+      title: `Preferred relay ${preferred.name} is down`,
+      detail: `No fallback is serving either. Next try ${when ?? "shortly"}.`,
+    };
+  }
+
+  return {
+    tone: "warn",
+    title: `Waiting for ${preferred.name}`,
+    detail: "The fallbacks open if it does not answer.",
+  };
 }
