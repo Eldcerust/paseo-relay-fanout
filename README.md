@@ -135,19 +135,21 @@ local relays that follow the official relay's server semantics:
   and the cards' numbers came from the real relays (official 18 ms request / 15 ms ping, home 45 to 75 ms / about 400 ms).
 - The latency numbers against fake relays with a known delay: a relay set to answer in 300 ms reported 300.8 ms, with its
   ping at 21 ms against a 20 ms setting.
+- The preference controls in Paseo's own web app, against a throwaway 0.14.0 daemon with two fake relays: **Add relay**
+  with a typed name, **Prefer**, the standby card, killing the preferred relay to watch the fallback take over, the
+  retry countdown after the grace period, **Auto**, an invalid address shown beside the field, the two-press **Remove**,
+  and the last relay having no Remove button. At a 390px viewport there was no horizontal overflow and the form stacked
+  into one column.
+- The live plugin after the final reload: `running`, the daemon's pid unchanged, the saved preference preserved, and
+  the screen's status fields (`preference`, `priority.role`, `fallbackActive`) present on the real relays.
 
 Not verified:
 
-- **The preference controls in the real app.** The screen was rendered in Paseo's web app while building it, but the
-  new priority card, Prefer buttons and Add relay form have not been looked at in the app since they were added.
-  Their wording is unit tested and the daemon side is exercised with fake relays, but a visual pass is still owed.
-- **Preferred mode on your live daemon.** It is still in Auto, so the failover path has only been seen against fake
-  relays, not against `relay.paseo.sh` and `paseo.example.com`.
 - **The screen on iOS or Android.** It was checked in the web build at phone width. It uses only React Native
   primitives and the host's own UI kit, but a native device was not used. The sidebar icon (`Waypoints`) rendered in the web build only.
-- **The latency rows in the real app.** The text and numbers come from unit-tested code and were read from a running
-  proxy, but the card was not looked at in the app this time (the browser tool could not reach the test daemon). Look at
-  it once on the live screen.
+- **Preferred mode failing over between the real relays.** The live daemon shows the real home relay active and the
+  real official relay standing by in Preferred mode, but taking the real preferred relay down and watching the other
+  real relay take over has not been done. That path is tested only with fake relays.
 - **The data socket keepalive against a real relay.** It is tested against fake relays only. It never closes a socket
   that has not answered a ping at least once, so a relay that ignores pings on data sockets is left alone, but whether
   the official relay answers them was not observed. No CLI command holds a session open without creating an agent, so

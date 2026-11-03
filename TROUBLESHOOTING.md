@@ -38,6 +38,8 @@ publicUseTls: true
 
 The proxy's relay list (`plugin-data\relay-fanout\config.json`): `official` = `relay.paseo.sh:443` (TLS),
 `home` = `paseo.example.com:443` (TLS). Before the switch the live config had only `"relay": { "enabled": true }`.
+As of 2026-11-03 22:23 local the saved preference is **Preferred home**, so `official` is standing by and
+`home` is the only registered relay. Press **Use** next to Auto on the screen if that was not intended.
 
 ## Use the right CLI
 
@@ -67,6 +69,7 @@ $p = "C:\Program Files\Paseo\resources\bin\paseo.cmd"     # in Git Bash it is $P
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | Phones or the app cannot reach the daemon after the restart | Daemon points at the proxy but the plugin is not running | `& $p plugin ls`; if failed, fix per rows below, else **roll back** (next section) |
+| Phones paired with the `official` relay cannot reach the daemon, while the sidebar says "Preferred relay home connected" | The saved mode is **Preferred home**, so `official` is deliberately standing by | Open **Relay Fan-out** and press **Use** next to Auto, or pair those devices with the `home` link |
 | Plugin `failed: Plugin process exited` | Port 7733 already in use (`EADDRINUSE` in plugin logs) | `netstat -ano \| findstr :7733`, free the port, then `& $p plugin reload relay-fanout` |
 | Plugin `failed: Invalid relay-fanout config ...` | Bad `plugin-data\relay-fanout\config.json` (listen host must be loopback, names `a-z0-9-`, endpoints `host:port`) | Fix the file, `& $p plugin reload relay-fanout` |
 | Sidebar says "Daemon not using the proxy" | `daemon.relay.endpoint` is not `127.0.0.1:7733`, or the daemon was not restarted after setting it | Set it (see intended settings), restart the daemon |
