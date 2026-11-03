@@ -287,3 +287,7 @@ daemon's relay transport.
 | `index.client.tsx` | App entry: the screen, the sidebar row, the Command Center item. |
 | `client/view-model.ts` | The wording and colour rules for each state (unit tested, no React). |
 | `client/*.tsx` | The screen, the sidebar row and the status dot. |
+
+## License
+
+MIT. See `LICENSE`.
