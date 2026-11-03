@@ -1,0 +1,7 @@
+{
+  "listen": { "host": "127.0.0.1", "port": 7733 },
+  "upstreams": [
+    { "name": "official", "endpoint": "relay.paseo.sh:443", "useTls": true },
+    { "name": "home", "endpoint": "paseo.example.com:443", "useTls": true }
+  ]
+}
