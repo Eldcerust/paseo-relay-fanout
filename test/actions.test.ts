@@ -21,9 +21,11 @@ const start = (): FanoutConfig =>
 /** A host that remembers what was committed, the way the plugin saves then applies. */
 function harness(options: { failToSave?: boolean } = {}) {
   let current = start();
+  const runningListen = { ...current.listen };
   const committed: FanoutConfig[] = [];
   const actions = createActions({
     config: () => current,
+    runningListen: () => runningListen,
     commit: (next) => {
       if (options.failToSave) throw new Error("EACCES: permission denied");
       committed.push(next);
@@ -89,6 +91,7 @@ describe("actions", () => {
     let current = start();
     const actions = createActions({
       config: () => current,
+      runningListen: () => ({ host: "127.0.0.1", port: 7733 }),
       commit: (next) => {
         saveConfig(file, next);
         current = next;

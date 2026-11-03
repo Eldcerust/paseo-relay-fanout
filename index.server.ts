@@ -5,7 +5,7 @@ import { exportConfig } from "./server/export";
 import { buildPairingLinks } from "./server/pairing";
 import { FanoutProxy, type Logger } from "./server/proxy";
 import { createStatusHandler, type StatusMeta } from "./server/status";
-import { addRelayRpc, exportConfigRpc, pairingRpc, preferenceRpc, removeRelayRpc, statusRpc } from "./shared/status";
+import { addRelayRpc, exportConfigRpc, importConfigRpc, pairingRpc, preferenceRpc, removeRelayRpc, statusRpc } from "./shared/status";
 
 const logger: Logger = {
   info: (message, fields) => console.log(format(message, fields)),
@@ -32,6 +32,8 @@ export default function contribute(server: PluginServerContext) {
   // The relay list and the preference can change while running, so the handlers read the latest.
   let current: FanoutConfig = loaded.config;
   const meta: StatusMeta = { configPath: loaded.path, configSource: loaded.source };
+  // The proxy keeps the address it started on: an import can change the file's listen, not this.
+  const runningListen = { ...current.listen };
 
   const proxy = new FanoutProxy({
     host: current.listen.host,
@@ -43,6 +45,7 @@ export default function contribute(server: PluginServerContext) {
 
   const actions = createActions({
     config: () => current,
+    runningListen: () => runningListen,
     commit: (next) => {
       // Save first: if the disk refuses, nothing running has changed.
       saveConfig(loaded.path, next);
@@ -69,6 +72,16 @@ export default function contribute(server: PluginServerContext) {
     } catch (error) {
       return { ok: false as const, error: `Could not write the export: ${(error as Error).message}` };
     }
+  });
+  server.handle(importConfigRpc, (input) => {
+    const result = actions.importConfig(input);
+    if (result.ok && result.applied) {
+      logger.info("config imported", {
+        relays: result.summary.relays.map((relay) => relay.name),
+        restartRequired: result.restartRequired,
+      });
+    }
+    return result;
   });
   server.handle(pairingRpc, () =>
     buildPairingLinks({

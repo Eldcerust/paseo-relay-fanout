@@ -5,7 +5,15 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { addRelayRpc, exportConfigRpc, preferenceRpc, removeRelayRpc, type PluginStatus } from "../shared/status";
+import {
+  addRelayRpc,
+  exportConfigRpc,
+  importConfigRpc,
+  preferenceRpc,
+  removeRelayRpc,
+  type ConfigSummaryView,
+  type PluginStatus,
+} from "../shared/status";
 import { StatusDot } from "./StatusDot";
 import { PAIRING_QUERY_KEY, STATUS_QUERY_PREFIX, useFanoutStatus, usePairingLinks } from "./status-query";
 import { describeLatency, describeUpstream, summarize, type Tone } from "./view-model";
@@ -112,6 +120,20 @@ function createStyles(theme: PluginTheme, compact: boolean) {
       gap: space.sm,
     },
     nameInput: compact ? { alignSelf: "stretch" as const } : { width: 140 },
+    textarea: {
+      minHeight: 132,
+      paddingHorizontal: space.sm,
+      paddingVertical: 8,
+      borderRadius: radius.md,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface0,
+      color: theme.colors.foreground,
+      fontSize: 12,
+      lineHeight: 17,
+      fontFamily: MONO_FONT,
+      textAlignVertical: "top" as const,
+    },
     hint: { color: theme.colors.foregroundMuted, fontSize: 12, lineHeight: 17 },
   };
 }
@@ -568,6 +590,123 @@ function ExportSection({ styles }: { styles: Styles }) {
   );
 }
 
+function ImportSection({ onChanged, styles }: { onChanged(): Promise<void>; styles: Styles }) {
+  const importConfig = useRpc(importConfigRpc);
+  const toast = useToast();
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ summary: ConfigSummaryView; restartRequired: boolean } | null>(null);
+
+  function edit(value: string) {
+    setText(value);
+    setPreview(null);
+    setError(null);
+  }
+
+  async function send(apply: boolean) {
+    if (busy || text.trim() === "") return;
+    setError(null);
+    setBusy(true);
+    try {
+      const result = await importConfig({ json: text, apply });
+      if (!result.ok) {
+        setPreview(null);
+        setError(result.error);
+        return;
+      }
+      if (!result.applied) {
+        setPreview({ summary: result.summary, restartRequired: result.restartRequired });
+        return;
+      }
+      const count = result.summary.relays.length;
+      setText("");
+      setPreview(null);
+      toast.show(`Imported ${count} relay${count === 1 ? "" : "s"}`, { variant: "success" });
+      await onChanged();
+    } catch (issue) {
+      setError(`The plugin did not answer: ${messageOf(issue)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const empty = text.trim() === "";
+  return (
+    <View style={{ gap: space.sm }}>
+      <Text accessibilityRole="header" style={styles.section}>
+        Import
+      </Text>
+      <View style={styles.card}>
+        <Text style={styles.muted}>
+          Paste the contents of an exported .json file, or any file with the same shape. Check it first: nothing
+          changes until you replace the config.
+        </Text>
+        <TextInput
+          accessibilityLabel="Config JSON"
+          autoCapitalize="none"
+          autoCorrect={false}
+          multiline
+          placeholder={'{\n  "upstreams": [ { "name": "official", "endpoint": "relay.paseo.sh:443" } ]\n}'}
+          placeholderTextColor={styles.hint.color}
+          value={text}
+          onChangeText={edit}
+          style={styles.textarea}
+        />
+        <View style={styles.formRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Check the pasted config"
+            accessibilityState={{ disabled: busy || empty }}
+            disabled={busy || empty}
+            onPress={() => void send(false)}
+            style={[styles.button, busy || empty ? styles.dim : null]}
+          >
+            <Text style={styles.buttonText}>{busy ? "Checking" : "Check file"}</Text>
+          </Pressable>
+          {preview ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Replace the config with this file"
+              accessibilityState={{ disabled: busy }}
+              disabled={busy}
+              onPress={() => void send(true)}
+              style={[styles.smallButton, busy ? styles.dim : null]}
+            >
+              <Text style={styles.smallButtonText}>Replace config</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        {preview ? (
+          <View style={{ gap: 2, marginTop: space.xs }}>
+            <MetaRow label="Relays" value={preview.summary.relays.map((relay) => relay.name).join(", ")} styles={styles} />
+            <MetaRow
+              label="Priority"
+              value={
+                preview.summary.preference.mode === "preferred"
+                  ? `prefer ${preview.summary.preference.preferred}`
+                  : "auto"
+              }
+              styles={styles}
+            />
+            <MetaRow label="Proxy" value={`${preview.summary.listen.host}:${preview.summary.listen.port}`} styles={styles} />
+            {preview.restartRequired ? (
+              <Text style={styles.hint}>
+                The proxy address changes, so the new address is used the next time the plugin starts.
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+        {error ? (
+          <Text accessibilityLiveRegion="polite" style={styles.error}>
+            {error}
+          </Text>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
 export function FanoutScreen({ theme, layout }: PluginScreenProps) {
   const query = useFanoutStatus(2_000, true);
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
@@ -680,6 +819,7 @@ export function FanoutScreen({ theme, layout }: PluginScreenProps) {
           </View>
           <AddRelaySection onChanged={refresh} styles={styles} />
           <ExportSection styles={styles} />
+          <ImportSection onChanged={refresh} styles={styles} />
           <PairingSection styles={styles} />
         </>
       ) : null}

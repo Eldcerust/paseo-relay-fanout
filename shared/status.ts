@@ -142,6 +142,31 @@ export const exportConfigRpc = defineRpc({
   ]),
 });
 
+const configSummarySchema = z.object({
+  relays: z.array(z.object({ name: z.string(), endpoint: z.string(), useTls: z.boolean() })),
+  preference: preferenceSchema,
+  listen: z.object({ host: z.string(), port: z.number() }),
+});
+
+/**
+ * Read a config pasted from a `.json` file. Without `apply` it only checks the file and answers
+ * with what it holds, so the screen can show what would change before anything is saved.
+ */
+export const importConfigRpc = defineRpc({
+  name: "relay-fanout.import-config",
+  input: z.object({ json: z.string(), apply: z.boolean().optional() }),
+  output: z.discriminatedUnion("ok", [
+    z.object({
+      ok: z.literal(true),
+      applied: z.boolean(),
+      summary: configSummarySchema,
+      /** The file moves the proxy, so the new address is only used from the next plugin start. */
+      restartRequired: z.boolean(),
+    }),
+    z.object({ ok: z.literal(false), error: z.string() }),
+  ]),
+});
+
 export type PluginStatus = z.output<typeof statusRpc.output>;
 export type UpstreamView = PluginStatus["upstreams"][number];
 export type UpstreamState = z.output<typeof upstreamStateSchema>;
@@ -152,3 +177,5 @@ export type PreferenceView = z.output<typeof preferenceSchema>;
 export type PairingResult = z.output<typeof pairingRpc.output>;
 export type ActionResult = z.output<typeof resultSchema>;
 export type ExportResult = z.output<typeof exportConfigRpc.output>;
+export type ConfigSummaryView = z.output<typeof configSummarySchema>;
+export type ImportResult = z.output<typeof importConfigRpc.output>;
