@@ -33,7 +33,8 @@ The screen shows:
   `Connect 86 ms`. When the two disagree a lot, the card says so. See "What the latency numbers mean".
 - **Add a relay**: paste `wss://relay.example.org`, `host:port` or a full `https://` URL, optionally give it a name,
   and press **Add relay**. The change is saved and applied without a restart. A relay can be removed with two presses
-  (the second confirms), as long as at least one remains.
+  (the second confirms), as long as at least one remains. **Edit** on a card renames the relay, moves it to another
+  address, or does both at once, with the same address rules as adding one.
 - **Pair a device**: a **Copy link** button per relay. The link is the same pairing link the daemon prints for its
   own relay, built for that relay. Paste it under Add host, or open it on the device.
 - **Export and Import**: **Export .json** writes the current relays, priority and proxy address to a `.json` file
@@ -236,6 +237,9 @@ daemon still pointed at the proxy and the plugin off, the daemon has no relay pa
   `ws://` and `http://` mean plain, and a bare host without a port is refused so a typo cannot silently dial port 80.
   At most 8 relays. A duplicate endpoint, a duplicate or invalid name, or a missing port is refused with the reason
   beside the field.
+- **Editing a relay** renames it, changes its address, or both, and is saved the same way. A rename carries the
+  preference with it. A new address closes that relay's sessions and dials the new one; every other relay is left
+  alone. A name or address another relay already uses is refused.
 - **Exports are ordinary config files.** **Export .json** writes `exports/relay-fanout-config-<time>.json` beside the
   config, in the same shape `config.json` uses, so it can be dropped in as the config on another daemon. Nothing is
   overwritten and nothing running changes. **Import** reads a file of that shape, checks it, and replaces the config
@@ -311,7 +315,7 @@ daemon's relay transport.
 | `index.server.ts` | Daemon entry: starts the proxy, answers the status, pairing and change RPCs. |
 | `server/proxy.ts`, `config.ts`, `ids.ts` | The proxy, config loading and saving, connection id prefixing. |
 | `server/priority.ts` | The pure rules for which relays to keep registered in Preferred mode. |
-| `server/relays.ts`, `actions.ts` | Validating an added relay, changing the preference, removing a relay, and committing the result. |
+| `server/relays.ts`, `actions.ts` | Validating an added or edited relay, changing the preference, removing a relay, and committing the result. |
 | `server/pairing.ts`, `status.ts` | Per-relay pairing links (public data only), status for the screen. |
 | `server/export.ts` | Writing the running config as a `.json` file beside it, without overwriting earlier exports. |
 | `server/import.ts` | Reading a pasted file back into a config, and describing it before it is applied. |

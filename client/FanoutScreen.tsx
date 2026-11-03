@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
   addRelayRpc,
+  editRelayRpc,
   exportConfigRpc,
   importConfigRpc,
   preferenceRpc,
@@ -96,6 +97,23 @@ function createStyles(theme: PluginTheme, compact: boolean) {
     smallButtonOn: { backgroundColor: theme.colors.statusSuccess },
     smallButtonText: { color: theme.colors.statusSuccess, fontSize: 12, fontWeight: "600" as const },
     smallButtonTextOn: { color: theme.colors.surface0 },
+    editButton: {
+      minHeight: compact ? MIN_TOUCH : 30,
+      justifyContent: "center" as const,
+      alignItems: "center" as const,
+      paddingHorizontal: space.md,
+      borderRadius: radius.md,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface2,
+    },
+    editText: { color: theme.colors.foreground, fontSize: 12, fontWeight: "600" as const },
+    ghostButton: {
+      minHeight: compact ? MIN_TOUCH : 30,
+      justifyContent: "center" as const,
+      paddingHorizontal: space.sm,
+    },
+    ghostText: { color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" as const },
     dim: { opacity: 0.55 },
     removeButton: {
       minHeight: compact ? MIN_TOUCH : 30,
@@ -265,6 +283,112 @@ function PriorityCard({
   );
 }
 
+function RelayEditor({
+  upstream,
+  onSaved,
+  onCancel,
+  styles,
+}: {
+  upstream: PluginStatus["upstreams"][number];
+  onSaved(): Promise<void>;
+  onCancel(): void;
+  styles: Styles;
+}) {
+  const editRelay = useRpc(editRelayRpc);
+  const toast = useToast();
+  const [name, setName] = useState(upstream.name);
+  const [address, setAddress] = useState(upstream.endpoint);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    if (busy) return;
+    if (address.trim() === "") {
+      setError("Enter the relay's address.");
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    try {
+      const result = await editRelay({
+        name: upstream.name,
+        newName: name.trim() === upstream.name ? undefined : name.trim(),
+        address: address.trim() === upstream.endpoint ? undefined : address.trim(),
+      });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      toast.show(`Updated ${result.name ?? upstream.name}`, { variant: "success" });
+      await onSaved();
+    } catch (issue) {
+      setError(`The plugin did not answer: ${messageOf(issue)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View style={{ gap: space.sm }}>
+      <View style={styles.formRow}>
+        <TextInput
+          accessibilityLabel="Relay name"
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="name"
+          placeholderTextColor={styles.hint.color}
+          value={name}
+          onChangeText={setName}
+          onSubmitEditing={() => void save()}
+          returnKeyType="done"
+          style={[styles.input, styles.nameInput]}
+        />
+        <TextInput
+          accessibilityLabel="Relay address"
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="wss://relay.example.org or host:port"
+          placeholderTextColor={styles.hint.color}
+          value={address}
+          onChangeText={setAddress}
+          onSubmitEditing={() => void save()}
+          returnKeyType="done"
+          style={[styles.input, styles.grow]}
+        />
+      </View>
+      <View style={styles.actionRow}>
+        <View style={styles.actionGroup}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Save the changes to ${upstream.name}`}
+            accessibilityState={{ disabled: busy }}
+            disabled={busy}
+            onPress={() => void save()}
+            style={[styles.button, busy ? styles.dim : null]}
+          >
+            <Text style={styles.buttonText}>{busy ? "Saving" : "Save"}</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Cancel editing ${upstream.name}`}
+            disabled={busy}
+            onPress={onCancel}
+            style={styles.ghostButton}
+          >
+            <Text style={styles.ghostText}>Cancel</Text>
+          </Pressable>
+        </View>
+      </View>
+      <Text style={styles.hint}>Changing the address reconnects this relay. Renaming keeps the priority.</Text>
+      {error ? (
+        <Text accessibilityLiveRegion="polite" style={styles.error}>
+          {error}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
 function RelayCard({
   upstream,
   now,
@@ -272,10 +396,14 @@ function RelayCard({
   fallbackActive,
   canRemove,
   confirmingRemove,
+  editing,
   busy,
   onPrefer,
+  onEdit,
+  onCancelEdit,
   onAskRemove,
   onRemove,
+  onChanged,
   styles,
   theme,
 }: {
@@ -285,10 +413,14 @@ function RelayCard({
   fallbackActive: boolean;
   canRemove: boolean;
   confirmingRemove: boolean;
+  editing: boolean;
   busy: boolean;
   onPrefer(name: string): void;
+  onEdit(): void;
+  onCancelEdit(): void;
   onAskRemove(name: string): void;
   onRemove(name: string): void;
+  onChanged(): Promise<void>;
   styles: Styles;
   theme: PluginTheme;
 }) {
@@ -306,8 +438,14 @@ function RelayCard({
           <Pill text={line.label} tone={line.tone} theme={theme} />
         </View>
       </View>
-      <Text style={styles.endpoint}>{upstream.endpoint}</Text>
-      {line.detail ? <Text style={styles.muted}>{line.detail}</Text> : null}
+      {editing ? (
+        <RelayEditor upstream={upstream} onSaved={onChanged} onCancel={onCancelEdit} styles={styles} />
+      ) : (
+        <>
+          <Text style={styles.endpoint}>{upstream.endpoint}</Text>
+          {line.detail ? <Text style={styles.muted}>{line.detail}</Text> : null}
+        </>
+      )}
       {latency ? (
         <View style={styles.latencyBlock}>
           {latency.rows.map((row) => (
@@ -326,35 +464,47 @@ function RelayCard({
           {latency.note ? <Text style={styles.muted}>{latency.note}</Text> : null}
         </View>
       ) : null}
-      <View style={styles.actionRow}>
-        <View style={styles.actionGroup}>
-          {priority ? (
+      {editing ? null : (
+        <View style={styles.actionRow}>
+          <View style={styles.actionGroup}>
+            {priority ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={preferred ? `${upstream.name} is the preferred relay` : `Prefer ${upstream.name}`}
+                accessibilityState={{ selected: preferred, disabled: busy || preferred }}
+                disabled={busy || preferred}
+                onPress={() => onPrefer(upstream.name)}
+                style={[styles.smallButton, preferred ? styles.smallButtonOn : null, busy ? styles.dim : null]}
+              >
+                <Text style={[styles.smallButtonText, preferred ? styles.smallButtonTextOn : null]}>
+                  {preferred ? "Preferred" : "Prefer"}
+                </Text>
+              </Pressable>
+            ) : null}
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={preferred ? `${upstream.name} is the preferred relay` : `Prefer ${upstream.name}`}
-              accessibilityState={{ selected: preferred, disabled: busy || preferred }}
-              disabled={busy || preferred}
-              onPress={() => onPrefer(upstream.name)}
-              style={[styles.smallButton, preferred ? styles.smallButtonOn : null, busy ? styles.dim : null]}
+              accessibilityLabel={`Rename or change the address of ${upstream.name}`}
+              accessibilityState={{ disabled: busy }}
+              disabled={busy}
+              onPress={onEdit}
+              style={[styles.editButton, busy ? styles.dim : null]}
             >
-              <Text style={[styles.smallButtonText, preferred ? styles.smallButtonTextOn : null]}>
-                {preferred ? "Preferred" : "Prefer"}
-              </Text>
+              <Text style={styles.editText}>Edit</Text>
+            </Pressable>
+          </View>
+          {canRemove ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={confirmingRemove ? `Confirm removing ${upstream.name}` : `Remove ${upstream.name}`}
+              disabled={busy}
+              onPress={() => (confirmingRemove ? onRemove(upstream.name) : onAskRemove(upstream.name))}
+              style={[styles.removeButton, busy ? styles.dim : null]}
+            >
+              <Text style={styles.removeText}>{confirmingRemove ? "Confirm remove" : "Remove"}</Text>
             </Pressable>
           ) : null}
         </View>
-        {canRemove ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={confirmingRemove ? `Confirm removing ${upstream.name}` : `Remove ${upstream.name}`}
-            disabled={busy}
-            onPress={() => (confirmingRemove ? onRemove(upstream.name) : onAskRemove(upstream.name))}
-            style={[styles.removeButton, busy ? styles.dim : null]}
-          >
-            <Text style={styles.removeText}>{confirmingRemove ? "Confirm remove" : "Remove"}</Text>
-          </Pressable>
-        ) : null}
-      </View>
+      )}
     </View>
   );
 }
@@ -716,6 +866,7 @@ export function FanoutScreen({ theme, layout }: PluginScreenProps) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
   const now = Date.now();
 
   useEffect(() => {
@@ -773,6 +924,7 @@ export function FanoutScreen({ theme, layout }: PluginScreenProps) {
         return;
       }
       toast.show(`Removed relay ${name}`, { variant: "success" });
+      setEditing(null);
       await refresh();
     } catch (issue) {
       toast.error(`Could not remove the relay: ${messageOf(issue)}`);
@@ -808,10 +960,17 @@ export function FanoutScreen({ theme, layout }: PluginScreenProps) {
                 fallbackActive={query.data.fallbackActive === true}
                 canRemove={query.data.upstreams.length > 1}
                 confirmingRemove={confirmRemove === upstream.name}
+                editing={editing === upstream.name}
                 busy={busy}
                 onPrefer={(name) => void prefer(name)}
+                onEdit={() => setEditing(upstream.name)}
+                onCancelEdit={() => setEditing(null)}
                 onAskRemove={setConfirmRemove}
                 onRemove={(name) => void remove(name)}
+                onChanged={async () => {
+                  setEditing(null);
+                  await refresh();
+                }}
                 styles={styles}
                 theme={theme}
               />

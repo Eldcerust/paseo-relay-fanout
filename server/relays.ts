@@ -2,7 +2,7 @@ import { MAX_RELAYS, RELAY_NAME_PATTERN, parseRelayAddress, suggestRelayName } f
 import type { FanoutConfig, Upstream } from "./config";
 import type { Preference } from "./priority";
 
-/** The three changes the screen can make to the relay list. All are pure: they return the new config. */
+/** The changes the screen can make to the relay list. All are pure: they return the new config. */
 export type Change =
   | { ok: true; config: FanoutConfig; upstream?: Upstream }
   | { ok: false; error: string };
@@ -51,4 +51,53 @@ export function setPreference(config: FanoutConfig, preference: { mode: "auto" }
     return { ok: false, error: `There is no relay called "${preference.preferred}".` };
   }
   return { ok: true, config: { ...config, preference: { mode: "preferred", preferred: preference.preferred } } };
+}
+
+/**
+ * Change a relay's name, its address, or both. Fields left out stay as they are. The address goes
+ * through the same rules as adding one, so a bare host is still refused. A rename carries the
+ * preference with it, and a changed address makes the proxy drop that relay's connections and dial
+ * the new one.
+ */
+export function editRelay(
+  config: FanoutConfig,
+  input: { name: string; newName?: string; address?: string },
+): Change {
+  const existing = config.upstreams.find((upstream) => upstream.name === input.name);
+  if (!existing) return { ok: false, error: `There is no relay called "${input.name}".` };
+
+  let name = existing.name;
+  const requestedName = input.newName?.trim();
+  if (requestedName !== undefined && requestedName !== "" && requestedName !== existing.name) {
+    if (!RELAY_NAME_PATTERN.test(requestedName)) {
+      return { ok: false, error: "A name is 1 to 24 lowercase letters, digits or dashes, and starts with a letter or digit." };
+    }
+    if (config.upstreams.some((upstream) => upstream.name === requestedName)) {
+      return { ok: false, error: `There is already a relay called "${requestedName}".` };
+    }
+    name = requestedName;
+  }
+
+  let endpoint = existing.endpoint;
+  let useTls = existing.useTls;
+  const requestedAddress = input.address?.trim();
+  if (requestedAddress !== undefined && requestedAddress !== "") {
+    const parsed = parseRelayAddress(requestedAddress);
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+    const other = config.upstreams.find(
+      (upstream) => upstream.endpoint === parsed.endpoint && upstream.name !== existing.name,
+    );
+    if (other) return { ok: false, error: `${parsed.endpoint} is already added as "${other.name}".` };
+    endpoint = parsed.endpoint;
+    useTls = parsed.useTls;
+  }
+
+  const upstream: Upstream = { name, endpoint, useTls };
+  const upstreams = config.upstreams.map((entry) => (entry.name === existing.name ? upstream : entry));
+  const preference: Preference =
+    name !== existing.name && config.preference.mode === "preferred" && config.preference.preferred === existing.name
+      ? { mode: "preferred", preferred: name }
+      : config.preference;
+
+  return { ok: true, config: { ...config, upstreams, preference }, upstream };
 }

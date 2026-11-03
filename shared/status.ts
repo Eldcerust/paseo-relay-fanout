@@ -116,6 +116,20 @@ export const addRelayRpc = defineRpc({
   output: resultSchema,
 });
 
+/**
+ * Rename a relay, move it to another address, or both. A field left out stays as it is, so the
+ * screen only sends what was changed.
+ */
+export const editRelayRpc = defineRpc({
+  name: "relay-fanout.edit-relay",
+  input: z.object({
+    name: z.string(),
+    newName: z.string().optional(),
+    address: z.string().optional(),
+  }),
+  output: resultSchema,
+});
+
 export const removeRelayRpc = defineRpc({
   name: "relay-fanout.remove-relay",
   input: z.object({ name: z.string() }),

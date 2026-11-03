@@ -5,7 +5,16 @@ import { exportConfig } from "./server/export";
 import { buildPairingLinks } from "./server/pairing";
 import { FanoutProxy, type Logger } from "./server/proxy";
 import { createStatusHandler, type StatusMeta } from "./server/status";
-import { addRelayRpc, exportConfigRpc, importConfigRpc, pairingRpc, preferenceRpc, removeRelayRpc, statusRpc } from "./shared/status";
+import {
+  addRelayRpc,
+  editRelayRpc,
+  exportConfigRpc,
+  importConfigRpc,
+  pairingRpc,
+  preferenceRpc,
+  removeRelayRpc,
+  statusRpc,
+} from "./shared/status";
 
 const logger: Logger = {
   info: (message, fields) => console.log(format(message, fields)),
@@ -63,6 +72,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(preferenceRpc, (input) => actions.setPreference(input));
   server.handle(addRelayRpc, (input) => actions.addRelay(input));
   server.handle(removeRelayRpc, (input) => actions.removeRelay(input));
+  server.handle(editRelayRpc, (input) => actions.editRelay(input));
   // An export is a copy of what is running now, so it is taken from `current`, not from `loaded`.
   server.handle(exportConfigRpc, () => {
     try {
