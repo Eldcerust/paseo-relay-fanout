@@ -46,8 +46,24 @@ function readOfferSettings(home: string): { appBaseUrl: string; requireProtected
   const config = readJson(path.join(home, "config.json"));
   const app = config?.app as { baseUrl?: unknown } | undefined;
   const relay = (config?.daemon as { relay?: { requireProtectedSecurity?: unknown } } | undefined)?.relay;
-  const baseUrl = typeof app?.baseUrl === "string" && app.baseUrl.trim() ? app.baseUrl.trim() : DEFAULT_APP_BASE_URL;
-  return { appBaseUrl: baseUrl, requireProtected: relay?.requireProtectedSecurity === true };
+  return { appBaseUrl: appBaseUrlOf(app?.baseUrl), requireProtected: relay?.requireProtectedSecurity === true };
+}
+
+/**
+ * A pairing link is something someone taps on a phone, so its base has to be an http(s) address.
+ * A `javascript:` or `file:` base in the daemon's own config would otherwise turn every pairing
+ * link into something no one should open.
+ */
+function appBaseUrlOf(value: unknown): string {
+  if (typeof value !== "string") return DEFAULT_APP_BASE_URL;
+  const trimmed = value.trim();
+  if (!trimmed) return DEFAULT_APP_BASE_URL;
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === "https:" || url.protocol === "http:" ? trimmed : DEFAULT_APP_BASE_URL;
+  } catch {
+    return DEFAULT_APP_BASE_URL;
+  }
 }
 
 /**

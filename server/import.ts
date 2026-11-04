@@ -1,12 +1,24 @@
 import { parseConfig, type FanoutConfig } from "./config";
 
 /**
+ * A config with at most 8 relays is a couple of kilobytes. Anything far larger is not a config,
+ * and parsing it would only tie up the daemon, so it is refused before JSON.parse runs.
+ */
+export const MAX_IMPORT_BYTES = 256 * 1024;
+
+/**
  * Read a config pasted from a `.json` file. Anything wrong with the text is reported with the field
  * that is wrong, because this is the only thing an import can tell the person who pasted it.
  */
 export function parseImportedConfig(text: string): FanoutConfig {
   if (text.trim() === "") {
     throw new Error("Paste the contents of a relay-fanout .json file first.");
+  }
+
+  if (Buffer.byteLength(text, "utf8") > MAX_IMPORT_BYTES) {
+    throw new Error(
+      `That file is larger than ${MAX_IMPORT_BYTES / 1024} KB. A relay-fanout config is a few kilobytes, so this is probably not one.`,
+    );
   }
 
   let json: unknown;
