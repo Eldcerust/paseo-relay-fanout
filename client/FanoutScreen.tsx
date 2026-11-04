@@ -1,9 +1,9 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
-import { Loading, ScrollView, TextInput, copyText, useToast } from "@getpaseo/plugin/client/ui";
+import { Icon, Loading, Modal, ScrollView, TextInput, copyText, useToast } from "@getpaseo/plugin/client/ui";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
   addRelayRpc,
@@ -12,17 +12,24 @@ import {
   importConfigRpc,
   preferenceRpc,
   removeRelayRpc,
+  reorderRelaysRpc,
   type ConfigSummaryView,
   type PluginStatus,
 } from "../shared/status";
+import { SortableList, type DragHandle } from "./SortableList";
 import { StatusDot } from "./StatusDot";
 import { PAIRING_QUERY_KEY, STATUS_QUERY_PREFIX, useFanoutStatus, usePairingLinks } from "./status-query";
-import { describeLatency, describeUpstream, summarize, type Tone } from "./view-model";
+import { describeLatency, describeUpstream, latencyHeadline, statusTag, summarize } from "./view-model";
 import { MIN_TOUCH, MONO_FONT, radius, space, toneColor } from "./visual";
+
+type Upstream = PluginStatus["upstreams"][number];
 
 function createStyles(theme: PluginTheme, compact: boolean) {
   const pad = compact ? space.lg : space.xl;
+  const rowHeight = compact ? 60 : 56;
   return {
+    rowHeight,
+    compact,
     screen: { flex: 1, backgroundColor: theme.colors.surface0 },
     content: { padding: pad, gap: compact ? space.md : space.lg },
     card: {
@@ -35,7 +42,6 @@ function createStyles(theme: PluginTheme, compact: boolean) {
     },
     headline: { flexDirection: "row" as const, alignItems: "center" as const, gap: space.sm },
     title: { flexShrink: 1, color: theme.colors.foreground, fontSize: compact ? 18 : 20, fontWeight: "600" as const },
-    body: { color: theme.colors.foreground, fontSize: 14, lineHeight: 20 },
     muted: { color: theme.colors.foregroundMuted, fontSize: 13, lineHeight: 18 },
     section: {
       color: theme.colors.foregroundMuted,
@@ -47,80 +53,140 @@ function createStyles(theme: PluginTheme, compact: boolean) {
     metaRow: { flexDirection: "row" as const, gap: space.md },
     metaLabel: { width: 56, color: theme.colors.foregroundMuted, fontSize: 12, lineHeight: 18 },
     metaValue: { flex: 1, color: theme.colors.foreground, fontSize: 12, lineHeight: 18, fontFamily: MONO_FONT },
-    rowTop: { flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "space-between" as const, gap: space.sm },
-    name: { flexShrink: 1, color: theme.colors.foreground, fontSize: 15, fontWeight: "600" as const },
-    endpoint: { color: theme.colors.foregroundMuted, fontSize: 12, lineHeight: 18, fontFamily: MONO_FONT },
     error: { color: theme.colors.statusDanger, fontSize: 12, lineHeight: 18 },
-    latencyBlock: {
-      gap: 2,
-      marginTop: space.xs,
-      paddingTop: space.sm,
-      borderTopWidth: 1,
-      borderTopColor: theme.colors.border,
-    },
-    latencyRow: {
-      flexDirection: "row" as const,
-      flexWrap: "wrap" as const,
-      alignItems: "baseline" as const,
-      columnGap: space.sm,
-    },
-    latencyLabel: { width: 84, color: theme.colors.foregroundMuted, fontSize: 12, lineHeight: 18 },
-    latencyValue: { color: theme.colors.foreground, fontSize: 15, fontWeight: "600" as const },
-    latencyBad: { color: theme.colors.statusDanger, fontSize: 15, fontWeight: "600" as const },
-    button: {
-      minHeight: compact ? MIN_TOUCH : 32,
-      justifyContent: "center" as const,
-      paddingHorizontal: space.md,
-      borderRadius: radius.md,
-      backgroundColor: theme.colors.accent,
-    },
-    buttonText: { color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" as const },
+    dim: { opacity: 0.45 },
     grow: { flex: 1 },
-    actionRow: {
+
+    // The relays header: title on the left, the mode switch and the add button on the right.
+    listHeader: {
       flexDirection: "row" as const,
       alignItems: "center" as const,
       justifyContent: "space-between" as const,
       gap: space.sm,
-      marginTop: space.xs,
     },
-    actionGroup: { flexDirection: "row" as const, alignItems: "center" as const, gap: space.sm },
-    smallButton: {
-      minHeight: compact ? MIN_TOUCH : 30,
-      justifyContent: "center" as const,
-      alignItems: "center" as const,
-      paddingHorizontal: space.md,
-      borderRadius: radius.md,
-      borderWidth: 1,
-      borderColor: theme.colors.statusSuccess,
-      backgroundColor: theme.colors.surface2,
-    },
-    smallButtonOn: { backgroundColor: theme.colors.statusSuccess },
-    smallButtonText: { color: theme.colors.statusSuccess, fontSize: 12, fontWeight: "600" as const },
-    smallButtonTextOn: { color: theme.colors.surface0 },
-    editButton: {
-      minHeight: compact ? MIN_TOUCH : 30,
-      justifyContent: "center" as const,
-      alignItems: "center" as const,
-      paddingHorizontal: space.md,
+    listHeaderActions: { flexDirection: "row" as const, alignItems: "center" as const, gap: space.sm },
+    segment: {
+      flexDirection: "row" as const,
       borderRadius: radius.md,
       borderWidth: 1,
       borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface1,
+      padding: 2,
+    },
+    segmentOption: {
+      minHeight: compact ? 36 : 28,
+      justifyContent: "center" as const,
+      paddingHorizontal: space.md,
+      borderRadius: radius.sm,
+    },
+    segmentOptionOn: { backgroundColor: theme.colors.accent },
+    segmentText: { color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" as const },
+    segmentTextOn: { color: theme.colors.accentForeground },
+
+    // One relay: a drag handle, the card, then the icon buttons outside it.
+    relayRow: { flexDirection: "row" as const, alignItems: "stretch" as const, gap: 2, minHeight: rowHeight },
+    handle: { width: 24, alignItems: "center" as const, justifyContent: "center" as const },
+    relayCard: {
+      flex: 1,
+      minWidth: 0,
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: compact ? space.sm : space.md,
+      paddingHorizontal: compact ? 10 : space.md,
+      backgroundColor: theme.colors.surface1,
+      borderColor: theme.colors.border,
+      borderWidth: 1,
+      borderRadius: radius.lg,
+    },
+    relayCardTop: { borderColor: theme.colors.accent },
+    rank: {
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
       backgroundColor: theme.colors.surface2,
     },
-    editText: { color: theme.colors.foreground, fontSize: 12, fontWeight: "600" as const },
+    rankTop: { backgroundColor: theme.colors.accent },
+    rankText: { color: theme.colors.foregroundMuted, fontSize: 11, fontWeight: "700" as const },
+    rankTextTop: { color: theme.colors.accentForeground },
+    relayText: { flex: 1, minWidth: 0, gap: 2 },
+    nameRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
+    name: { flexShrink: 1, color: theme.colors.foreground, fontSize: 15, fontWeight: "600" as const },
+    endpoint: { color: theme.colors.foregroundMuted, fontSize: 12, lineHeight: 16, fontFamily: MONO_FONT },
+    relayLatency: { alignItems: "flex-end" as const, justifyContent: "center" as const, flexShrink: 0 },
+    latency: { color: theme.colors.foreground, fontSize: compact ? 17 : 20, fontWeight: "700" as const, lineHeight: 24 },
+    latencyBad: { color: theme.colors.statusDanger },
+    latencyPending: { color: theme.colors.foregroundMuted, fontWeight: "400" as const },
+    latencyTag: { color: theme.colors.foregroundMuted, fontSize: 11, lineHeight: 14 },
+    iconButton: {
+      width: compact ? 36 : 34,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      borderRadius: radius.md,
+    },
+    iconButtonOn: { backgroundColor: theme.colors.surface2 },
+    iconButtonArmed: { backgroundColor: theme.colors.statusDanger },
+    // Beside a form the icons keep their own size instead of stretching to the form's height.
+    iconButtonFixed: { alignSelf: "flex-start" as const, height: compact ? MIN_TOUCH : 36 },
+    // The width of the drag handle and its gap, so a form lines up with the cards around it.
+    handleIndent: { marginLeft: 24 + 2 },
+
+    // A relay being edited, or added: the fields take the card's place.
+    formBox: {
+      flex: 1,
+      minWidth: 0,
+      gap: space.xs,
+      padding: space.md,
+      backgroundColor: theme.colors.surface1,
+      borderColor: theme.colors.accent,
+      borderWidth: 1,
+      borderRadius: radius.lg,
+    },
+    formFields: { flexDirection: "row" as const, alignItems: "center" as const, gap: space.sm },
+    formFieldsStacked: { gap: space.sm },
+    nameInput: { width: 140 },
+
+    footer: { flexDirection: "row" as const, gap: space.sm },
+    button: {
+      minHeight: compact ? MIN_TOUCH : 34,
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      gap: space.sm,
+      paddingHorizontal: space.lg,
+      borderRadius: radius.md,
+      backgroundColor: theme.colors.accent,
+    },
+    buttonText: { color: theme.colors.accentForeground, fontSize: 13, fontWeight: "600" as const },
+    outlineButton: {
+      minHeight: compact ? MIN_TOUCH : 34,
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      gap: space.sm,
+      paddingHorizontal: space.lg,
+      borderRadius: radius.md,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface1,
+    },
+    outlineText: { color: theme.colors.foreground, fontSize: 13, fontWeight: "600" as const },
     ghostButton: {
-      minHeight: compact ? MIN_TOUCH : 30,
+      minHeight: compact ? MIN_TOUCH : 34,
       justifyContent: "center" as const,
-      paddingHorizontal: space.sm,
+      paddingHorizontal: space.md,
     },
-    ghostText: { color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" as const },
-    dim: { opacity: 0.55 },
-    removeButton: {
-      minHeight: compact ? MIN_TOUCH : 30,
-      justifyContent: "center" as const,
-      paddingHorizontal: space.sm,
+    ghostText: { color: theme.colors.foregroundMuted, fontSize: 13, fontWeight: "600" as const },
+
+    // Inside the popups.
+    dialog: { gap: space.md },
+    dialogActions: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      justifyContent: "flex-end" as const,
+      gap: space.sm,
     },
-    removeText: { color: theme.colors.statusDanger, fontSize: 12, fontWeight: "600" as const },
     input: {
       minHeight: compact ? MIN_TOUCH : 36,
       paddingHorizontal: space.sm,
@@ -132,14 +198,8 @@ function createStyles(theme: PluginTheme, compact: boolean) {
       color: theme.colors.foreground,
       fontSize: 14,
     },
-    formRow: {
-      flexDirection: compact ? ("column" as const) : ("row" as const),
-      alignItems: compact ? ("stretch" as const) : ("center" as const),
-      gap: space.sm,
-    },
-    nameInput: compact ? { alignSelf: "stretch" as const } : { width: 140 },
     textarea: {
-      minHeight: 132,
+      minHeight: 160,
       paddingHorizontal: space.sm,
       paddingVertical: 8,
       borderRadius: radius.md,
@@ -160,33 +220,6 @@ type Styles = ReturnType<typeof createStyles>;
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function Pill({ text, tone, theme }: { text: string; tone: Tone; theme: PluginTheme }) {
-  const filled = tone !== "idle";
-  return (
-    <View
-      style={{
-        flexShrink: 0,
-        borderRadius: radius.sm,
-        paddingHorizontal: space.sm - 2,
-        paddingVertical: 2,
-        backgroundColor: filled ? toneColor(theme, tone) : theme.colors.surface2,
-      }}
-    >
-      <Text
-        numberOfLines={1}
-        style={{
-          color: filled ? theme.colors.surface0 : theme.colors.foregroundMuted,
-          fontSize: 11,
-          lineHeight: 16,
-          fontWeight: "600",
-        }}
-      >
-        {text}
-      </Text>
-    </View>
-  );
 }
 
 function SummaryCard({
@@ -233,94 +266,290 @@ function MetaRow({ label, value, styles }: { label: string; value: string; style
   );
 }
 
-function PriorityCard({
-  status,
-  busy,
-  onAuto,
+/** A bare icon beside a relay card. The label is what a screen reader announces. */
+function IconButton({
+  icon,
+  label,
+  color,
+  disabled,
+  armed,
+  fixed,
+  onPress,
   styles,
-  theme,
 }: {
-  status: PluginStatus;
-  busy: boolean;
-  onAuto(): void;
+  icon: string;
+  label: string;
+  color: string;
+  disabled?: boolean;
+  /** Keep a set height, for use beside a form. */
+  fixed?: boolean;
+  /** Pressed once already: filled, so the next press is understood as the confirmation. */
+  armed?: boolean;
+  onPress(): void;
   styles: Styles;
-  theme: PluginTheme;
 }) {
-  const preference = status.preference;
-  const auto = !preference || preference.mode === "auto";
-  const preferred = preference?.preferred ?? null;
   return (
-    <View style={styles.card}>
-      <View style={styles.rowTop}>
-        <View style={styles.grow}>
-          <Text style={styles.name}>Auto</Text>
-          <Text style={styles.muted}>
-            {auto
-              ? "Every relay stays connected. Each device uses the fastest one it can reach."
-              : preferred
-                ? `Preferred relay: ${preferred}.`
-                : "No relay is preferred."}
-          </Text>
-        </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Use Auto relay selection"
-          accessibilityState={{ selected: auto, disabled: busy || auto }}
-          disabled={busy || auto}
-          onPress={onAuto}
-          style={[styles.smallButton, auto ? styles.smallButtonOn : null, busy ? styles.dim : null]}
-        >
-          <Text style={[styles.smallButtonText, auto ? styles.smallButtonTextOn : null]}>{auto ? "On" : "Use"}</Text>
-        </Pressable>
-      </View>
-      {auto ? null : (
-        <Text style={styles.muted}>
-          Only the preferred relay is registered. If it fails, the fastest healthy relay takes over, and the preferred
-          one is retried every 2 minutes.
-        </Text>
-      )}
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: disabled === true }}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+        styles.iconButton,
+        pressed || hovered ? styles.iconButtonOn : null,
+        armed ? styles.iconButtonArmed : null,
+        fixed ? styles.iconButtonFixed : null,
+        disabled ? styles.dim : null,
+      ]}
+    >
+      <Icon name={icon} size={18} color={color} />
+    </Pressable>
+  );
+}
+
+/** Auto keeps every relay open. Priority ranks them by their order in the list. */
+function ModeSwitch({
+  priority,
+  disabled,
+  onChange,
+  styles,
+}: {
+  priority: boolean;
+  disabled: boolean;
+  onChange(priority: boolean): void;
+  styles: Styles;
+}) {
+  const option = (label: string, value: boolean) => {
+    const on = priority === value;
+    return (
+      <Pressable
+        accessibilityRole="radio"
+        accessibilityLabel={value ? "Priority order" : "Auto"}
+        accessibilityState={{ selected: on, disabled }}
+        disabled={disabled || on}
+        onPress={() => onChange(value)}
+        style={[styles.segmentOption, on ? styles.segmentOptionOn : null, disabled ? styles.dim : null]}
+      >
+        <Text style={[styles.segmentText, on ? styles.segmentTextOn : null]}>{label}</Text>
+      </Pressable>
+    );
+  };
+  return (
+    <View accessibilityRole="radiogroup" style={styles.segment}>
+      {option("Auto", false)}
+      {option("Priority", true)}
     </View>
   );
 }
 
-function RelayEditor({
+function RelayRow({
   upstream,
-  onSaved,
+  index,
+  count,
+  priorityMode,
+  now,
+  daemonConnected,
+  fallbackActive,
+  canRemove,
+  armed,
+  handle,
+  dragging,
+  onPair,
+  onEdit,
+  onRemove,
+  styles,
+  theme,
+}: {
+  upstream: Upstream;
+  index: number;
+  count: number;
+  priorityMode: boolean;
+  now: number;
+  daemonConnected: boolean;
+  fallbackActive: boolean;
+  canRemove: boolean;
+  /** The trash icon was pressed once; the next press removes the relay. */
+  armed: boolean;
+  handle: DragHandle;
+  dragging: boolean;
+  onPair(): void;
+  onEdit(): void;
+  onRemove(): void;
+  styles: Styles;
+  theme: PluginTheme;
+}) {
+  const line = describeUpstream(upstream, now, { daemonConnected, fallbackActive });
+  const headline = latencyHeadline(upstream.latency);
+  const detail = describeLatency(upstream.latency);
+  const tag = statusTag(line);
+  const top = priorityMode && index === 0;
+  const showHandle = priorityMode && count > 1;
+
+  const spoken = [
+    upstream.name,
+    upstream.endpoint,
+    priorityMode ? `priority ${index + 1} of ${count}` : null,
+    line.label,
+    line.detail,
+    detail ? detail.rows.map((row) => `${row.label} ${row.value}`).join(", ") : null,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(". ");
+
+  return (
+    <View style={styles.relayRow}>
+      {showHandle ? (
+        <View
+          {...handle.panHandlers}
+          accessible
+          accessibilityRole="adjustable"
+          accessibilityLabel={`Reorder ${upstream.name}, priority ${index + 1} of ${count}`}
+          accessibilityActions={[
+            { name: "decrement", label: "Move up" },
+            { name: "increment", label: "Move down" },
+          ]}
+          onAccessibilityAction={(event) => handle.moveBy(event.nativeEvent.actionName === "decrement" ? -1 : 1)}
+          style={[styles.handle, handle.style]}
+        >
+          <Icon name="GripVertical" size={18} color={dragging ? theme.colors.accent : theme.colors.foregroundMuted} />
+        </View>
+      ) : null}
+
+      <View
+        accessible
+        accessibilityLabel={spoken}
+        style={[styles.relayCard, top || dragging ? styles.relayCardTop : null]}
+      >
+        {priorityMode && !styles.compact ? (
+          <View style={[styles.rank, top ? styles.rankTop : null]}>
+            <Text style={[styles.rankText, top ? styles.rankTextTop : null]}>{index + 1}</Text>
+          </View>
+        ) : null}
+        <View style={styles.relayText}>
+          <View style={styles.nameRow}>
+            <Text numberOfLines={1} style={styles.name}>
+              {upstream.name}
+            </Text>
+            <StatusDot color={toneColor(theme, line.tone)} label={line.label} size={8} />
+          </View>
+          <Text numberOfLines={1} style={styles.endpoint}>
+            {upstream.endpoint}
+          </Text>
+        </View>
+        <View style={styles.relayLatency}>
+          {headline ? (
+            <Text
+              numberOfLines={1}
+              style={[
+                styles.latency,
+                headline.kind === "bad" ? styles.latencyBad : null,
+                headline.kind === "pending" ? styles.latencyPending : null,
+              ]}
+            >
+              {headline.text}
+            </Text>
+          ) : null}
+          {tag ? <Text style={styles.latencyTag}>{tag}</Text> : null}
+        </View>
+      </View>
+
+      <IconButton
+        icon="Globe"
+        label={`Copy the pairing link for ${upstream.name}`}
+        color={theme.colors.foregroundMuted}
+        onPress={onPair}
+        styles={styles}
+      />
+      <IconButton
+        icon="Pencil"
+        label={`Edit ${upstream.name}`}
+        color={theme.colors.foregroundMuted}
+        onPress={onEdit}
+        styles={styles}
+      />
+      <IconButton
+        icon="Trash2"
+        label={
+          !canRemove
+            ? `${upstream.name} cannot be removed, the proxy needs one relay`
+            : armed
+              ? `Confirm removing ${upstream.name}`
+              : `Remove ${upstream.name}`
+        }
+        color={armed ? theme.colors.surface0 : theme.colors.statusDanger}
+        disabled={!canRemove}
+        armed={armed}
+        onPress={onRemove}
+        styles={styles}
+      />
+    </View>
+  );
+}
+
+function Dialog({ title, onClose, children, styles }: { title: string; onClose(): void; children: ReactNode; styles: Styles }) {
+  return (
+    <Modal title={title} open onOpenChange={(open) => (open ? undefined : onClose())}>
+      <Modal.Content>
+        <View style={styles.dialog}>{children}</View>
+      </Modal.Content>
+    </Modal>
+  );
+}
+
+function ErrorLine({ message, styles }: { message: string | null; styles: Styles }) {
+  return message ? (
+    <Text accessibilityLiveRegion="polite" style={styles.error}>
+      {message}
+    </Text>
+  ) : null;
+}
+
+/**
+ * The name and address of a relay, edited in place of its card (or in a new row when adding), with
+ * save and cancel beside it. It answers a refusal in the row, next to the field that caused it.
+ */
+function RelayForm({
+  mode,
+  initialName,
+  initialAddress,
+  compact,
+  indent,
+  onSubmit,
   onCancel,
   styles,
+  theme,
 }: {
-  upstream: PluginStatus["upstreams"][number];
-  onSaved(): Promise<void>;
+  mode: "add" | "edit";
+  initialName: string;
+  initialAddress: string;
+  compact: boolean;
+  /** Leave room for the drag handle the cards have, so the form lines up with them. */
+  indent: boolean;
+  onSubmit(name: string, address: string): Promise<string | null>;
   onCancel(): void;
   styles: Styles;
+  theme: PluginTheme;
 }) {
-  const editRelay = useRpc(editRelayRpc);
-  const toast = useToast();
-  const [name, setName] = useState(upstream.name);
-  const [address, setAddress] = useState(upstream.endpoint);
+  const [name, setName] = useState(initialName);
+  const [address, setAddress] = useState(initialAddress);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const empty = address.trim() === "";
+  const noun = mode === "add" ? "relay" : initialName;
 
-  async function save() {
+  async function submit() {
     if (busy) return;
-    if (address.trim() === "") {
+    if (empty) {
       setError("Enter the relay's address.");
       return;
     }
     setError(null);
     setBusy(true);
     try {
-      const result = await editRelay({
-        name: upstream.name,
-        newName: name.trim() === upstream.name ? undefined : name.trim(),
-        address: address.trim() === upstream.endpoint ? undefined : address.trim(),
-      });
-      if (!result.ok) {
-        setError(result.error);
-        return;
-      }
-      toast.show(`Updated ${result.name ?? upstream.name}`, { variant: "success" });
-      await onSaved();
+      // A refusal comes back as a message; success comes back as null and closes the form.
+      const refusal = await onSubmit(name.trim(), address.trim());
+      if (refusal) setError(refusal);
     } catch (issue) {
       setError(`The plugin did not answer: ${messageOf(issue)}`);
     } finally {
@@ -329,418 +558,68 @@ function RelayEditor({
   }
 
   return (
-    <View style={{ gap: space.sm }}>
-      <View style={styles.formRow}>
-        <TextInput
-          accessibilityLabel="Relay name"
-          autoCapitalize="none"
-          autoCorrect={false}
-          placeholder="name"
-          placeholderTextColor={styles.hint.color}
-          value={name}
-          onChangeText={setName}
-          onSubmitEditing={() => void save()}
-          returnKeyType="done"
-          style={[styles.input, styles.nameInput]}
-        />
-        <TextInput
-          accessibilityLabel="Relay address"
-          autoCapitalize="none"
-          autoCorrect={false}
-          placeholder="wss://relay.example.org or host:port"
-          placeholderTextColor={styles.hint.color}
-          value={address}
-          onChangeText={setAddress}
-          onSubmitEditing={() => void save()}
-          returnKeyType="done"
-          style={[styles.input, styles.grow]}
-        />
-      </View>
-      <View style={styles.actionRow}>
-        <View style={styles.actionGroup}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Save the changes to ${upstream.name}`}
-            accessibilityState={{ disabled: busy }}
-            disabled={busy}
-            onPress={() => void save()}
-            style={[styles.button, busy ? styles.dim : null]}
-          >
-            <Text style={styles.buttonText}>{busy ? "Saving" : "Save"}</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Cancel editing ${upstream.name}`}
-            disabled={busy}
-            onPress={onCancel}
-            style={styles.ghostButton}
-          >
-            <Text style={styles.ghostText}>Cancel</Text>
-          </Pressable>
-        </View>
-      </View>
-      <Text style={styles.hint}>Changing the address reconnects this relay. Renaming keeps the priority.</Text>
-      {error ? (
-        <Text accessibilityLiveRegion="polite" style={styles.error}>
-          {error}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
-function RelayCard({
-  upstream,
-  now,
-  daemonConnected,
-  fallbackActive,
-  canRemove,
-  confirmingRemove,
-  editing,
-  busy,
-  onPrefer,
-  onEdit,
-  onCancelEdit,
-  onAskRemove,
-  onRemove,
-  onChanged,
-  styles,
-  theme,
-}: {
-  upstream: PluginStatus["upstreams"][number];
-  now: number;
-  daemonConnected: boolean;
-  fallbackActive: boolean;
-  canRemove: boolean;
-  confirmingRemove: boolean;
-  editing: boolean;
-  busy: boolean;
-  onPrefer(name: string): void;
-  onEdit(): void;
-  onCancelEdit(): void;
-  onAskRemove(name: string): void;
-  onRemove(name: string): void;
-  onChanged(): Promise<void>;
-  styles: Styles;
-  theme: PluginTheme;
-}) {
-  const line = describeUpstream(upstream, now, { daemonConnected, fallbackActive });
-  const latency = describeLatency(upstream.latency);
-  const priority = upstream.priority;
-  const preferred = priority?.preferred === true;
-  return (
-    <View style={styles.card}>
-      <View style={styles.rowTop}>
-        <Text numberOfLines={1} style={styles.name}>
-          {upstream.name}
-        </Text>
-        <View style={styles.actionGroup}>
-          <Pill text={line.label} tone={line.tone} theme={theme} />
-        </View>
-      </View>
-      {editing ? (
-        <RelayEditor upstream={upstream} onSaved={onChanged} onCancel={onCancelEdit} styles={styles} />
-      ) : (
-        <>
-          <Text style={styles.endpoint}>{upstream.endpoint}</Text>
-          {line.detail ? <Text style={styles.muted}>{line.detail}</Text> : null}
-        </>
-      )}
-      {latency ? (
-        <View style={styles.latencyBlock}>
-          {latency.rows.map((row) => (
-            <View key={row.label} style={styles.latencyRow}>
-              <Text style={styles.latencyLabel}>{row.label}</Text>
-              <Text
-                accessibilityLabel={`${upstream.name} ${row.label} ${row.value}`}
-                style={row.bad ? styles.latencyBad : styles.latencyValue}
-              >
-                {row.value}
-              </Text>
-              {row.detail ? <Text style={styles.muted}>{row.detail}</Text> : null}
-            </View>
-          ))}
-          {latency.error ? <Text style={styles.error}>{latency.error}</Text> : null}
-          {latency.note ? <Text style={styles.muted}>{latency.note}</Text> : null}
-        </View>
-      ) : null}
-      {editing ? null : (
-        <View style={styles.actionRow}>
-          <View style={styles.actionGroup}>
-            {priority ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={preferred ? `${upstream.name} is the preferred relay` : `Prefer ${upstream.name}`}
-                accessibilityState={{ selected: preferred, disabled: busy || preferred }}
-                disabled={busy || preferred}
-                onPress={() => onPrefer(upstream.name)}
-                style={[styles.smallButton, preferred ? styles.smallButtonOn : null, busy ? styles.dim : null]}
-              >
-                <Text style={[styles.smallButtonText, preferred ? styles.smallButtonTextOn : null]}>
-                  {preferred ? "Preferred" : "Prefer"}
-                </Text>
-              </Pressable>
-            ) : null}
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Rename or change the address of ${upstream.name}`}
-              accessibilityState={{ disabled: busy }}
-              disabled={busy}
-              onPress={onEdit}
-              style={[styles.editButton, busy ? styles.dim : null]}
-            >
-              <Text style={styles.editText}>Edit</Text>
-            </Pressable>
-          </View>
-          {canRemove ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={confirmingRemove ? `Confirm removing ${upstream.name}` : `Remove ${upstream.name}`}
-              disabled={busy}
-              onPress={() => (confirmingRemove ? onRemove(upstream.name) : onAskRemove(upstream.name))}
-              style={[styles.removeButton, busy ? styles.dim : null]}
-            >
-              <Text style={styles.removeText}>{confirmingRemove ? "Confirm remove" : "Remove"}</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      )}
-    </View>
-  );
-}
-
-function AddRelaySection({
-  onChanged,
-  styles,
-}: {
-  onChanged(): Promise<void>;
-  styles: Styles;
-}) {
-  const addRelay = useRpc(addRelayRpc);
-  const toast = useToast();
-  const [address, setAddress] = useState("");
-  const [name, setName] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function submit() {
-    if (busy || address.trim() === "") return;
-    setError(null);
-    setBusy(true);
-    try {
-      const result = await addRelay({ address, name: name.trim() || undefined });
-      if (!result.ok) {
-        setError(result.error);
-        return;
-      }
-      setAddress("");
-      setName("");
-      toast.show(`Added relay ${result.name ?? ""}`.trim(), { variant: "success" });
-      await onChanged();
-    } catch (issue) {
-      setError(`The plugin did not answer: ${messageOf(issue)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <View style={{ gap: space.sm }}>
-      <Text accessibilityRole="header" style={styles.section}>
-        Add a relay
-      </Text>
-      <View style={styles.card}>
-        <Text style={styles.muted}>
-          Paste an address. The relay is opened while the plugin runs, and each device can pair with it from the list
-          below.
-        </Text>
-        <View style={styles.formRow}>
+    <View style={[styles.relayRow, indent ? styles.handleIndent : null]}>
+      <View style={styles.formBox}>
+        <View style={compact ? styles.formFieldsStacked : styles.formFields}>
+          <TextInput
+            accessibilityLabel={mode === "add" ? "Relay name, optional" : "Relay name"}
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder={mode === "add" ? "name (optional)" : "name"}
+            placeholderTextColor={styles.hint.color}
+            value={name}
+            onChangeText={setName}
+            onSubmitEditing={() => void submit()}
+            returnKeyType="done"
+            style={[styles.input, compact ? null : styles.nameInput]}
+          />
           <TextInput
             accessibilityLabel="Relay address"
             autoCapitalize="none"
             autoCorrect={false}
+            autoFocus={mode === "add"}
             placeholder="wss://relay.example.org or host:port"
             placeholderTextColor={styles.hint.color}
             value={address}
             onChangeText={setAddress}
             onSubmitEditing={() => void submit()}
             returnKeyType="done"
-            style={[styles.input, styles.grow]}
+            style={[styles.input, compact ? null : styles.grow]}
           />
-          <TextInput
-            accessibilityLabel="Relay name, optional"
-            autoCapitalize="none"
-            autoCorrect={false}
-            placeholder="name (optional)"
-            placeholderTextColor={styles.hint.color}
-            value={name}
-            onChangeText={setName}
-            onSubmitEditing={() => void submit()}
-            returnKeyType="done"
-            style={[styles.input, styles.nameInput]}
-          />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Add relay"
-            accessibilityState={{ disabled: busy || address.trim() === "" }}
-            disabled={busy || address.trim() === ""}
-            onPress={() => void submit()}
-            style={[styles.button, busy || address.trim() === "" ? styles.dim : null]}
-          >
-            <Text style={styles.buttonText}>{busy ? "Adding" : "Add relay"}</Text>
-          </Pressable>
         </View>
-        <Text style={styles.hint}>
-          A missing port is refused. Port 443 means TLS. A name is made from the address when left blank.
-        </Text>
         {error ? (
           <Text accessibilityLiveRegion="polite" style={styles.error}>
             {error}
           </Text>
-        ) : null}
+        ) : mode === "add" ? (
+          <Text style={styles.hint}>A missing port is refused. Port 443 means TLS. The new relay goes last.</Text>
+        ) : (
+          <Text style={styles.hint}>Changing the address reconnects this relay. Renaming keeps its place.</Text>
+        )}
       </View>
+      <IconButton
+        icon="Check"
+        label={mode === "add" ? "Add relay" : `Save the changes to ${noun}`}
+        color={theme.colors.statusSuccess}
+        disabled={busy || empty}
+        fixed
+        onPress={() => void submit()}
+        styles={styles}
+      />
+      <IconButton
+        icon="X"
+        label={mode === "add" ? "Cancel adding a relay" : `Cancel editing ${noun}`}
+        color={theme.colors.foregroundMuted}
+        disabled={busy}
+        fixed
+        onPress={onCancel}
+        styles={styles}
+      />
     </View>
   );
 }
 
-function PairingSection({ styles }: { styles: Styles }) {
-  const pairing = usePairingLinks();
-  const toast = useToast();
-
-  async function copy(name: string, link: string) {
-    try {
-      await copyText(link);
-      toast.show(`Pairing link for ${name} copied`, { variant: "success" });
-    } catch {
-      toast.error("Copying is not available here");
-    }
-  }
-
-  return (
-    <View style={{ gap: space.sm }}>
-      <Text accessibilityRole="header" style={styles.section}>
-        Pair a device
-      </Text>
-      <View style={styles.card}>
-        <Text style={styles.muted}>
-          Each relay needs its own link. Copy one, then open it on the device or paste it under Add host.
-        </Text>
-        {pairing.isPending ? <Text style={styles.muted}>Preparing links</Text> : null}
-        {pairing.isError ? <Text style={styles.error}>Could not prepare the pairing links.</Text> : null}
-        {pairing.data && !pairing.data.available ? <Text style={styles.error}>{pairing.data.reason}</Text> : null}
-        {pairing.data?.available
-          ? pairing.data.links.map((entry) => (
-              <View key={entry.name} style={styles.rowTop}>
-                <View style={{ flexShrink: 1, gap: 2 }}>
-                  <Text numberOfLines={1} style={styles.name}>
-                    {entry.name}
-                  </Text>
-                  <Text numberOfLines={1} style={styles.endpoint}>
-                    {entry.endpoint}
-                  </Text>
-                </View>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Copy pairing link for ${entry.name}`}
-                  onPress={() => void copy(entry.name, entry.link)}
-                  style={styles.button}
-                >
-                  <Text style={styles.buttonText}>Copy link</Text>
-                </Pressable>
-              </View>
-            ))
-          : null}
-      </View>
-    </View>
-  );
-}
-
-function ExportSection({ styles }: { styles: Styles }) {
-  const exportConfig = useRpc(exportConfigRpc);
-  const toast = useToast();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [exported, setExported] = useState<{ filename: string; path: string; json: string } | null>(null);
-
-  async function write() {
-    if (busy) return;
-    setError(null);
-    setBusy(true);
-    try {
-      const result = await exportConfig({});
-      if (!result.ok) {
-        setError(result.error);
-        return;
-      }
-      setExported({ filename: result.filename, path: result.path, json: result.json });
-      toast.show(`Exported ${result.filename}`, { variant: "success" });
-    } catch (issue) {
-      setError(`The plugin did not answer: ${messageOf(issue)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function copy() {
-    if (!exported) return;
-    try {
-      await copyText(exported.json);
-      toast.show("Config JSON copied", { variant: "success" });
-    } catch {
-      toast.error("Copying is not available here");
-    }
-  }
-
-  return (
-    <View style={{ gap: space.sm }}>
-      <Text accessibilityRole="header" style={styles.section}>
-        Export
-      </Text>
-      <View style={styles.card}>
-        <Text style={styles.muted}>
-          Save the relays, the priority and the proxy address as a .json file. It is written beside the plugin's
-          config and is a valid config file, so it can set up another daemon or be kept as a backup.
-        </Text>
-        <View style={styles.formRow}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Export the config as JSON"
-            accessibilityState={{ disabled: busy }}
-            disabled={busy}
-            onPress={() => void write()}
-            style={[styles.button, busy ? styles.dim : null]}
-          >
-            <Text style={styles.buttonText}>{busy ? "Exporting" : "Export .json"}</Text>
-          </Pressable>
-          {exported ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Copy the exported JSON"
-              onPress={() => void copy()}
-              style={styles.smallButton}
-            >
-              <Text style={styles.smallButtonText}>Copy JSON</Text>
-            </Pressable>
-          ) : null}
-        </View>
-        {exported ? (
-          <View style={{ gap: 2, marginTop: space.xs }}>
-            <MetaRow label="File" value={exported.filename} styles={styles} />
-            <MetaRow label="Path" value={exported.path} styles={styles} />
-          </View>
-        ) : null}
-        <Text style={styles.hint}>Earlier exports are kept; every press writes a new file.</Text>
-        {error ? (
-          <Text accessibilityLiveRegion="polite" style={styles.error}>
-            {error}
-          </Text>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
-function ImportSection({ onChanged, styles }: { onChanged(): Promise<void>; styles: Styles }) {
+function ImportDialog({ onClose, onChanged, styles }: { onClose(): void; onChanged(): Promise<void>; styles: Styles }) {
   const importConfig = useRpc(importConfigRpc);
   const toast = useToast();
   const [text, setText] = useState("");
@@ -770,10 +649,9 @@ function ImportSection({ onChanged, styles }: { onChanged(): Promise<void>; styl
         return;
       }
       const count = result.summary.relays.length;
-      setText("");
-      setPreview(null);
       toast.show(`Imported ${count} relay${count === 1 ? "" : "s"}`, { variant: "success" });
       await onChanged();
+      onClose();
     } catch (issue) {
       setError(`The plugin did not answer: ${messageOf(issue)}`);
     } finally {
@@ -783,27 +661,53 @@ function ImportSection({ onChanged, styles }: { onChanged(): Promise<void>; styl
 
   const empty = text.trim() === "";
   return (
-    <View style={{ gap: space.sm }}>
-      <Text accessibilityRole="header" style={styles.section}>
-        Import
+    <Dialog title="Import a config" onClose={onClose} styles={styles}>
+      <Text style={styles.muted}>
+        Paste the JSON from an export. Check it first: nothing changes until you replace the config.
       </Text>
-      <View style={styles.card}>
-        <Text style={styles.muted}>
-          Paste the contents of an exported .json file, or any file with the same shape. Check it first: nothing
-          changes until you replace the config.
-        </Text>
-        <TextInput
-          accessibilityLabel="Config JSON"
-          autoCapitalize="none"
-          autoCorrect={false}
-          multiline
-          placeholder={'{\n  "upstreams": [ { "name": "official", "endpoint": "relay.paseo.sh:443" } ]\n}'}
-          placeholderTextColor={styles.hint.color}
-          value={text}
-          onChangeText={edit}
-          style={styles.textarea}
-        />
-        <View style={styles.formRow}>
+      <TextInput
+        accessibilityLabel="Config JSON"
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoFocus
+        multiline
+        placeholder={'{\n  "upstreams": [ { "name": "official", "endpoint": "relay.paseo.sh:443" } ]\n}'}
+        placeholderTextColor={styles.hint.color}
+        value={text}
+        onChangeText={edit}
+        style={styles.textarea}
+      />
+      {preview ? (
+        <View style={{ gap: 2 }}>
+          <MetaRow label="Relays" value={preview.summary.relays.map((relay) => relay.name).join(", ")} styles={styles} />
+          <MetaRow
+            label="Priority"
+            value={preview.summary.preference.mode === "preferred" ? "in the order shown" : "auto"}
+            styles={styles}
+          />
+          <MetaRow label="Proxy" value={`${preview.summary.listen.host}:${preview.summary.listen.port}`} styles={styles} />
+          {preview.restartRequired ? (
+            <Text style={styles.hint}>The proxy address changes, so the new address is used the next time the plugin starts.</Text>
+          ) : null}
+        </View>
+      ) : null}
+      <ErrorLine message={error} styles={styles} />
+      <View style={styles.dialogActions}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Cancel importing" disabled={busy} onPress={onClose} style={styles.ghostButton}>
+          <Text style={styles.ghostText}>Cancel</Text>
+        </Pressable>
+        {preview ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Replace the config with this file"
+            accessibilityState={{ disabled: busy }}
+            disabled={busy}
+            onPress={() => void send(true)}
+            style={[styles.button, busy ? styles.dim : null]}
+          >
+            <Text style={styles.buttonText}>{busy ? "Replacing" : "Replace config"}</Text>
+          </Pressable>
+        ) : (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Check the pasted config"
@@ -812,111 +716,123 @@ function ImportSection({ onChanged, styles }: { onChanged(): Promise<void>; styl
             onPress={() => void send(false)}
             style={[styles.button, busy || empty ? styles.dim : null]}
           >
-            <Text style={styles.buttonText}>{busy ? "Checking" : "Check file"}</Text>
+            <Text style={styles.buttonText}>{busy ? "Checking" : "Check"}</Text>
           </Pressable>
-          {preview ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Replace the config with this file"
-              accessibilityState={{ disabled: busy }}
-              disabled={busy}
-              onPress={() => void send(true)}
-              style={[styles.smallButton, busy ? styles.dim : null]}
-            >
-              <Text style={styles.smallButtonText}>Replace config</Text>
-            </Pressable>
-          ) : null}
-        </View>
-        {preview ? (
-          <View style={{ gap: 2, marginTop: space.xs }}>
-            <MetaRow label="Relays" value={preview.summary.relays.map((relay) => relay.name).join(", ")} styles={styles} />
-            <MetaRow
-              label="Priority"
-              value={
-                preview.summary.preference.mode === "preferred"
-                  ? `prefer ${preview.summary.preference.preferred}`
-                  : "auto"
-              }
-              styles={styles}
-            />
-            <MetaRow label="Proxy" value={`${preview.summary.listen.host}:${preview.summary.listen.port}`} styles={styles} />
-            {preview.restartRequired ? (
-              <Text style={styles.hint}>
-                The proxy address changes, so the new address is used the next time the plugin starts.
-              </Text>
-            ) : null}
-          </View>
-        ) : null}
-        {error ? (
-          <Text accessibilityLiveRegion="polite" style={styles.error}>
-            {error}
-          </Text>
-        ) : null}
+        )}
       </View>
-    </View>
+    </Dialog>
   );
 }
 
 export function FanoutScreen({ theme, layout }: PluginScreenProps) {
   const query = useFanoutStatus(2_000, true);
+  const pairing = usePairingLinks();
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
   const queryClient = useQueryClient();
   const setPreference = useRpc(preferenceRpc);
+  const reorderRelays = useRpc(reorderRelaysRpc);
+  const addRelay = useRpc(addRelayRpc);
+  const editRelay = useRpc(editRelayRpc);
   const removeRelay = useRpc(removeRelayRpc);
+  const exportConfig = useRpc(exportConfigRpc);
   const toast = useToast();
   const [busy, setBusy] = useState(false);
-  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
+  // The relay whose trash icon was pressed once. A second press removes it; waiting backs out.
+  const [armed, setArmed] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  // The order just dropped, shown until the plugin has saved it, so the row does not jump back.
+  const [localOrder, setLocalOrder] = useState<string[] | null>(null);
   const now = Date.now();
 
   useEffect(() => {
-    if (!confirmRemove) return;
-    const timer = setTimeout(() => setConfirmRemove(null), 5_000);
+    if (!armed) return;
+    const timer = setTimeout(() => setArmed(null), 5_000);
     return () => clearTimeout(timer);
-  }, [confirmRemove]);
+  }, [armed]);
+
+  const status = query.data;
+  const upstreams = useMemo(() => {
+    const list = status?.upstreams ?? [];
+    if (!localOrder) return list;
+    const byName = new Map(list.map((upstream) => [upstream.name, upstream]));
+    const ordered = localOrder.map((name) => byName.get(name)).filter((upstream): upstream is Upstream => upstream !== undefined);
+    return ordered.length === list.length ? ordered : list;
+  }, [status, localOrder]);
 
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: STATUS_QUERY_PREFIX });
     await queryClient.invalidateQueries({ queryKey: PAIRING_QUERY_KEY });
   }
 
-  async function chooseAuto() {
+  async function changeMode(priority: boolean) {
+    const first = upstreams[0];
+    if (priority && !first) return;
     setBusy(true);
     try {
-      const result = await setPreference({ mode: "auto" });
+      const result = await setPreference(priority ? { mode: "preferred", preferred: first!.name } : { mode: "auto" });
       if (!result.ok) {
         toast.error(result.error);
         return;
       }
-      toast.show("Auto: each device picks the fastest relay", { variant: "success" });
+      toast.show(priority ? `${first!.name} is first in line` : "Auto: each device picks the fastest relay", {
+        variant: "success",
+      });
       await refresh();
     } catch (issue) {
-      toast.error(`Could not change the preference: ${messageOf(issue)}`);
+      toast.error(`Could not change the mode: ${messageOf(issue)}`);
     } finally {
       setBusy(false);
     }
   }
 
-  async function prefer(name: string) {
+  async function reorder(names: string[]) {
+    setLocalOrder(names);
     setBusy(true);
     try {
-      const result = await setPreference({ mode: "preferred", preferred: name });
-      if (!result.ok) {
-        toast.error(result.error);
-        return;
-      }
-      toast.show(`${name} is now the preferred relay`, { variant: "success" });
-      await refresh();
+      const result = await reorderRelays({ names });
+      if (!result.ok) toast.error(result.error);
     } catch (issue) {
-      toast.error(`Could not change the preference: ${messageOf(issue)}`);
+      toast.error(`Could not save the order: ${messageOf(issue)}`);
     } finally {
+      await refresh();
+      setLocalOrder(null);
       setBusy(false);
     }
   }
 
-  async function remove(name: string) {
+  /** Each form answers with a refusal to show in its row, or null once the change is saved. */
+  async function submitAdd(name: string, address: string): Promise<string | null> {
+    const result = await addRelay({ address, name: name || undefined });
+    if (!result.ok) return result.error;
+    toast.show(`Added relay ${result.name ?? ""}`.trim(), { variant: "success" });
+    setAdding(false);
+    await refresh();
+    return null;
+  }
+
+  async function submitEdit(upstream: Upstream, name: string, address: string): Promise<string | null> {
+    const result = await editRelay({
+      name: upstream.name,
+      newName: name === "" || name === upstream.name ? undefined : name,
+      address: address === upstream.endpoint ? undefined : address,
+    });
+    if (!result.ok) return result.error;
+    toast.show(`Updated ${result.name ?? upstream.name}`, { variant: "success" });
+    setEditing(null);
+    await refresh();
+    return null;
+  }
+
+  async function pressTrash(name: string) {
+    if (armed !== name) {
+      setArmed(name);
+      toast.show(`Press the trash icon again to remove ${name}`, { variant: "warning" });
+      return;
+    }
+    setArmed(null);
     setBusy(true);
-    setConfirmRemove(null);
     try {
       const result = await removeRelay({ name });
       if (!result.ok) {
@@ -924,7 +840,6 @@ export function FanoutScreen({ theme, layout }: PluginScreenProps) {
         return;
       }
       toast.show(`Removed relay ${name}`, { variant: "success" });
-      setEditing(null);
       await refresh();
     } catch (issue) {
       toast.error(`Could not remove the relay: ${messageOf(issue)}`);
@@ -933,55 +848,175 @@ export function FanoutScreen({ theme, layout }: PluginScreenProps) {
     }
   }
 
+  async function copyPairingLink(name: string) {
+    const links = pairing.data;
+    if (!links) {
+      toast.error(pairing.isError ? "Could not prepare the pairing links." : "The pairing links are still being prepared.");
+      return;
+    }
+    if (!links.available) {
+      toast.error(links.reason);
+      return;
+    }
+    const entry = links.links.find((candidate) => candidate.name === name);
+    if (!entry) {
+      toast.error(`There is no pairing link for ${name} yet.`);
+      return;
+    }
+    try {
+      await copyText(entry.link);
+      toast.show(`Pairing link for ${name} copied`, { variant: "success" });
+    } catch {
+      toast.error("Copying is not available here");
+    }
+  }
+
+  async function exportToClipboard() {
+    setBusy(true);
+    try {
+      const result = await exportConfig({});
+      if (!result.ok) {
+        toast.error(result.error);
+        return;
+      }
+      try {
+        await copyText(result.json);
+        toast.show("Config copied", { variant: "success" });
+      } catch {
+        toast.error(`Copying is not available here. The config was saved to ${result.path}`);
+      }
+    } catch (issue) {
+      toast.error(`Could not export the config: ${messageOf(issue)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (query.isPending) return <Loading />;
 
-  const summary = summarize(query.data, query.isError, now);
+  const summary = summarize(status, query.isError, now);
+  const priorityMode = status?.preference?.mode === "preferred";
+  const formOpen = adding || editing !== null;
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <SummaryCard status={query.data} summary={summary} styles={styles} theme={theme} />
-      {query.data ? (
+      <SummaryCard status={status} summary={summary} styles={styles} theme={theme} />
+      {status ? (
         <>
           <View style={{ gap: space.sm }}>
-            <Text accessibilityRole="header" style={styles.section}>
-              Priority
+            <View style={styles.listHeader}>
+              <Text accessibilityRole="header" style={styles.section}>
+                Relays
+              </Text>
+              <View style={styles.listHeaderActions}>
+                <ModeSwitch priority={priorityMode} disabled={busy} onChange={(priority) => void changeMode(priority)} styles={styles} />
+                <IconButton
+                  icon="Plus"
+                  label="Add a relay"
+                  color={theme.colors.foreground}
+                  disabled={busy || adding}
+                  onPress={() => {
+                    setEditing(null);
+                    setArmed(null);
+                    setAdding(true);
+                  }}
+                  styles={styles}
+                />
+              </View>
+            </View>
+            <Text style={styles.muted}>
+              {priorityMode
+                ? "Drag to set the order. The first relay is used while it works, and the others take over in turn if it fails."
+                : "Every relay stays connected, and each device uses the fastest one it can reach."}
             </Text>
-            <PriorityCard status={query.data} busy={busy} onAuto={() => void chooseAuto()} styles={styles} theme={theme} />
-          </View>
-          <View style={{ gap: space.sm }}>
-            <Text accessibilityRole="header" style={styles.section}>
-              Relays
-            </Text>
-            {query.data.upstreams.map((upstream) => (
-              <RelayCard
-                key={upstream.name}
-                upstream={upstream}
-                now={now}
-                daemonConnected={query.data.daemonConnected}
-                fallbackActive={query.data.fallbackActive === true}
-                canRemove={query.data.upstreams.length > 1}
-                confirmingRemove={confirmRemove === upstream.name}
-                editing={editing === upstream.name}
-                busy={busy}
-                onPrefer={(name) => void prefer(name)}
-                onEdit={() => setEditing(upstream.name)}
-                onCancelEdit={() => setEditing(null)}
-                onAskRemove={setConfirmRemove}
-                onRemove={(name) => void remove(name)}
-                onChanged={async () => {
-                  setEditing(null);
-                  await refresh();
-                }}
+            {adding ? (
+              <RelayForm
+                mode="add"
+                initialName=""
+                initialAddress=""
+                compact={layout.compact}
+                indent={priorityMode && upstreams.length > 1}
+                onSubmit={submitAdd}
+                onCancel={() => setAdding(false)}
                 styles={styles}
                 theme={theme}
               />
-            ))}
+            ) : null}
+            <SortableList
+              items={upstreams}
+              getKey={(upstream) => upstream.name}
+              rowHeight={styles.rowHeight}
+              gap={space.sm}
+              enabled={priorityMode && !busy && !formOpen && upstreams.length > 1}
+              onReorder={(names) => void reorder(names)}
+              renderRow={(upstream, index, handle, dragging) =>
+                editing === upstream.name ? (
+                  <RelayForm
+                    mode="edit"
+                    initialName={upstream.name}
+                    initialAddress={upstream.endpoint}
+                    compact={layout.compact}
+                    indent={priorityMode && upstreams.length > 1}
+                    onSubmit={(name, address) => submitEdit(upstream, name, address)}
+                    onCancel={() => setEditing(null)}
+                    styles={styles}
+                    theme={theme}
+                  />
+                ) : (
+                  <RelayRow
+                    upstream={upstream}
+                    index={index}
+                    count={upstreams.length}
+                    priorityMode={priorityMode}
+                    now={now}
+                    daemonConnected={status.daemonConnected}
+                    fallbackActive={status.fallbackActive === true}
+                    canRemove={upstreams.length > 1 && !busy}
+                    armed={armed === upstream.name}
+                    handle={handle}
+                    dragging={dragging}
+                    onPair={() => void copyPairingLink(upstream.name)}
+                    onEdit={() => {
+                      setAdding(false);
+                      setArmed(null);
+                      setEditing(upstream.name);
+                    }}
+                    onRemove={() => void pressTrash(upstream.name)}
+                    styles={styles}
+                    theme={theme}
+                  />
+                )
+              }
+            />
           </View>
-          <AddRelaySection onChanged={refresh} styles={styles} />
-          <ExportSection styles={styles} />
-          <ImportSection onChanged={refresh} styles={styles} />
-          <PairingSection styles={styles} />
+          <View style={styles.footer}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Export the config to the clipboard"
+              accessibilityState={{ disabled: busy }}
+              disabled={busy}
+              onPress={() => void exportToClipboard()}
+              style={[styles.outlineButton, layout.compact ? styles.grow : null, busy ? styles.dim : null]}
+            >
+              <Icon name="Copy" size={16} color={theme.colors.foreground} />
+              <Text style={styles.outlineText}>Export</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Import a config"
+              accessibilityState={{ disabled: busy }}
+              disabled={busy}
+              onPress={() => setImporting(true)}
+              style={[styles.outlineButton, layout.compact ? styles.grow : null, busy ? styles.dim : null]}
+            >
+              <Icon name="Upload" size={16} color={theme.colors.foreground} />
+              <Text style={styles.outlineText}>Import</Text>
+            </Pressable>
+          </View>
         </>
       ) : null}
+
+      {importing ? <ImportDialog onClose={() => setImporting(false)} onChanged={refresh} styles={styles} /> : null}
     </ScrollView>
   );
 }

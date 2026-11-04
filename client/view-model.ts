@@ -124,6 +124,30 @@ export function describeLatency(latency: UpstreamLatencyView | undefined): Laten
   return { rows, error: request.lastOk === false ? latency.error : null, note };
 }
 
+/** The one latency number a relay card shows on its right edge. */
+export interface LatencyHeadline {
+  text: string;
+  /** "value" is a measurement, "bad" a failed one, "pending" nothing yet. */
+  kind: "value" | "bad" | "pending";
+}
+
+/**
+ * The request round trip is the headline: it is what the proxy measures even for a relay it has
+ * closed, so every card has a number to show. The socket ping stays in the card's spoken label.
+ * Null when the plugin is too old to report latency, so the card leaves the space empty.
+ */
+export function latencyHeadline(latency: UpstreamLatencyView | undefined): LatencyHeadline | null {
+  if (!latency) return null;
+  const row = describeStat("Request", latency.request);
+  if (!row) return { text: "—", kind: "pending" };
+  return { text: row.value, kind: row.bad ? "bad" : "value" };
+}
+
+/** A short word for a relay that is not simply connected, or null when it is. */
+export function statusTag(line: UpstreamLine): string | null {
+  return line.tone === "ok" ? null : line.label;
+}
+
 /** Context the screen knows but a single relay's status does not. */
 export interface UpstreamContext {
   /** The daemon is talking to the proxy. When false, a standby role is not a choice. */

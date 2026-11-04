@@ -7,6 +7,8 @@ import {
   formatMs,
   formatSince,
   formatUntil,
+  latencyHeadline,
+  statusTag,
   summarize,
 } from "../client/view-model";
 import { EMPTY_STAT } from "../server/latency";
@@ -425,5 +427,36 @@ describe("describeLatency", () => {
 
   it("omits the ping row while the relay is not connected and has produced no pings", () => {
     expect(describeLatency(latencyOf({ request: healthy }))?.rows.map((row) => row.label)).toEqual(["Request"]);
+  });
+});
+
+describe("latencyHeadline", () => {
+  it("is the request round trip, the one number on a relay card", () => {
+    const request = stat({ lastOk: true, lastMs: 59.4, avgMs: 60, answered: 3 });
+    const ping = stat({ lastOk: true, lastMs: 12, avgMs: 12, answered: 3 });
+    expect(latencyHeadline(latencyOf({ request, ping }))).toEqual({ text: "59 ms", kind: "value" });
+  });
+
+  it("says so when the request was not answered", () => {
+    const request = stat({ lastOk: false, lastMs: null, lost: 2 });
+    expect(latencyHeadline(latencyOf({ request }))).toEqual({ text: "No answer", kind: "bad" });
+  });
+
+  it("shows a dash before there is any measurement", () => {
+    expect(latencyHeadline(latencyOf())).toEqual({ text: "—", kind: "pending" });
+  });
+
+  it("leaves the space empty for a plugin that does not report latency", () => {
+    expect(latencyHeadline(undefined)).toBeNull();
+  });
+});
+
+describe("statusTag", () => {
+  it("is nothing for a connected relay, and the state word for any other", () => {
+    expect(statusTag(describeUpstream(upstream(), NOW))).toBeNull();
+    expect(statusTag(describeUpstream(upstream({ state: "down", ready: false }), NOW))).toBe("Down");
+    expect(
+      statusTag(describeUpstream(upstream({ ready: false, priority: priority({ role: "standby" }) }), NOW, { daemonConnected: true })),
+    ).toBe("Standby");
   });
 });
