@@ -346,4 +346,4 @@ daemon's relay transport.
 
 ## License
 
-MIT. See `LICENSE`.
+Apache-2.0, the same license as Paseo. See `LICENSE`.
