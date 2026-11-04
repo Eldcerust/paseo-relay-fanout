@@ -37,20 +37,38 @@ export function removeRelay(config: FanoutConfig, name: string): Change {
   if (!config.upstreams.some((upstream) => upstream.name === name)) return { ok: false, error: `There is no relay called "${name}".` };
   if (config.upstreams.length === 1) return { ok: false, error: "The proxy needs at least one relay." };
 
-  // Removing the preferred relay leaves nothing to prefer, so go back to Auto rather than keep a dangling name.
+  // Removing the preferred relay promotes the next one in the list, which stays in priority mode.
+  const upstreams = config.upstreams.filter((upstream) => upstream.name !== name);
   const preference: Preference =
     config.preference.mode === "preferred" && config.preference.preferred === name
-      ? { mode: "auto", preferred: null }
+      ? { mode: "preferred", preferred: upstreams[0]!.name }
       : config.preference;
-  return { ok: true, config: { ...config, upstreams: config.upstreams.filter((upstream) => upstream.name !== name), preference } };
+  return { ok: true, config: { ...config, upstreams, preference } };
 }
 
 export function setPreference(config: FanoutConfig, preference: { mode: "auto" } | { mode: "preferred"; preferred: string }): Change {
   if (preference.mode === "auto") return { ok: true, config: { ...config, preference: { mode: "auto", preferred: null } } };
-  if (!config.upstreams.some((upstream) => upstream.name === preference.preferred)) {
-    return { ok: false, error: `There is no relay called "${preference.preferred}".` };
+  const chosen = config.upstreams.find((upstream) => upstream.name === preference.preferred);
+  if (!chosen) return { ok: false, error: `There is no relay called "${preference.preferred}".` };
+  // The list order is the priority, so the preferred relay goes to the top and the rest keep their order.
+  const upstreams = [chosen, ...config.upstreams.filter((upstream) => upstream !== chosen)];
+  return { ok: true, config: { ...config, upstreams, preference: { mode: "preferred", preferred: chosen.name } } };
+}
+
+/**
+ * Set the priority order. `names` must list every relay exactly once. In priority mode the first
+ * name becomes the preferred relay; in Auto the order is only remembered.
+ */
+export function reorderRelays(config: FanoutConfig, names: string[]): Change {
+  const known = new Map(config.upstreams.map((upstream) => [upstream.name, upstream]));
+  const unique = new Set(names);
+  if (unique.size !== names.length || names.length !== known.size || names.some((name) => !known.has(name))) {
+    return { ok: false, error: "The order must list every relay once." };
   }
-  return { ok: true, config: { ...config, preference: { mode: "preferred", preferred: preference.preferred } } };
+  const upstreams = names.map((name) => known.get(name)!);
+  const preference: Preference =
+    config.preference.mode === "preferred" ? { mode: "preferred", preferred: names[0]! } : config.preference;
+  return { ok: true, config: { ...config, upstreams, preference } };
 }
 
 /**

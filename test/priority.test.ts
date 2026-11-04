@@ -17,7 +17,6 @@ function relay(name: string, overrides: Partial<RelayFacts> = {}): RelayFacts {
     readyForMs: null,
     unreadyForMs: null,
     nextRetestAt: null,
-    latencyMs: null,
     ...overrides,
   };
 }
@@ -83,47 +82,36 @@ describe("when the preferred relay becomes unavailable", () => {
     expect(decision.declareDown).toBeNull();
   });
 
-  it("keeps only the best fallback once one is serving, the fastest of several", () => {
+  it("keeps only the highest ranked fallback once one is serving, whichever of them is faster", () => {
     const decision = run(
       prefer("home"),
-      [
-        serving("slow", { latencyMs: 120 }),
-        serving("quick", { latencyMs: 15 }),
-        struggling("home", 5_000),
-        relay("unmeasured"),
-      ],
+      [serving("second"), serving("third"), struggling("home", 5_000), relay("fourth")],
       true,
     );
-    expect(decision.register).toEqual(["quick", "home"]);
+    expect(decision.register).toEqual(["second", "home"]);
   });
 
-  it("keeps several fallbacks open while one of them has not been measured yet, so a stood-down relay cannot win by default", () => {
-    const measured = serving("measured", { latencyMs: 20, readyForMs: 100 });
-    const pending = serving("pending", { latencyMs: null, readyForMs: 100 });
-    const decision = run(prefer("home"), [pending, measured, struggling("home", 5_000)], true);
-    expect(decision.register).toEqual(["pending", "measured", "home"]);
+  it("skips a higher ranked fallback that is not serving and uses the next one", () => {
+    const stale = struggling("second", timing.settleMs);
+    const decision = run(prefer("home"), [stale, serving("third"), struggling("home", 5_000)], true);
+    expect(decision.register).toEqual(["third", "home"]);
   });
 
-  it("stops waiting for a measurement after the settle time and ranks the unmeasured relay last", () => {
-    const measured = serving("measured", { latencyMs: 20, readyForMs: timing.settleMs });
-    const silent = serving("silent", { latencyMs: null, readyForMs: timing.settleMs });
-    const decision = run(prefer("home"), [silent, measured, struggling("home", 5_000)], true);
-    expect(decision.register).toEqual(["measured", "home"]);
+  it("keeps a higher ranked fallback open while it is still connecting, so a quick one ranked below it cannot win by default", () => {
+    const connecting = struggling("second", timing.settleMs - 1);
+    const quick = serving("third", { readyForMs: 100 });
+    const decision = run(prefer("home"), [connecting, quick, struggling("home", 5_000)], true);
+    expect(decision.register).toEqual(["second", "third", "home"]);
   });
 
-  it("does not wait when only one fallback is serving", () => {
-    const only = serving("only", { latencyMs: null, readyForMs: 100 });
-    expect(run(prefer("home"), [only, struggling("home", 5_000)], true).register).toEqual(["only", "home"]);
+  it("lets the higher ranked fallback take over once it is serving, and stands the lower one down", () => {
+    const decision = run(prefer("home"), [serving("second", { readyForMs: 100 }), serving("third"), struggling("home", 5_000)], true);
+    expect(decision.register).toEqual(["second", "home"]);
   });
 
-  it("ranks a relay with no measurement last, and keeps the configured order on a tie", () => {
-    const a = serving("a", { latencyMs: null });
-    const b = serving("b", { latencyMs: 40 });
-    expect(run(prefer("home"), [a, b, struggling("home", 5_000)], true).register).toEqual(["b", "home"]);
-
-    const c = serving("c", { latencyMs: 30 });
-    const d = serving("d", { latencyMs: 30 });
-    expect(run(prefer("home"), [c, d, struggling("home", 5_000)], true).register).toEqual(["c", "home"]);
+  it("does not wait for a stood-down fallback, which is not trying to connect", () => {
+    const decision = run(prefer("home"), [relay("second"), serving("third"), struggling("home", 5_000)], true);
+    expect(decision.register).toEqual(["third", "home"]);
   });
 
   it("gives up on it after the grace period and stops trying until the retest", () => {
@@ -177,7 +165,7 @@ describe("while the preferred relay is given up on", () => {
 describe("when the preferred relay comes back", () => {
   it("keeps the fallback until the preferred relay has been ready for a while, so a flapping relay does not make others come and go", () => {
     const back = serving("home", { readyForMs: 2_000 });
-    const decision = run(prefer("home"), [serving("official", { latencyMs: 20 }), back], true);
+    const decision = run(prefer("home"), [serving("official"), back], true);
     expect(decision.register).toEqual(["official", "home"]);
     expect(decision.fallbackActive).toBe(true);
   });

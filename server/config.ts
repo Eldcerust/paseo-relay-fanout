@@ -22,8 +22,9 @@ export interface Upstream {
 
 export interface FanoutConfig {
   listen: { host: string; port: number };
+  /** In priority order: when `preference` is "preferred", the first relay is the preferred one. */
   upstreams: Upstream[];
-  /** Which relay to prefer; "auto" keeps every relay open and lets each device pick. */
+  /** "preferred" ranks the relays by their order; "auto" keeps every relay open and lets each device pick. */
   preference: Preference;
 }
 
@@ -111,6 +112,7 @@ export function parseConfig(raw: unknown): FanoutConfig {
 
   const preference = parsed.data.preference;
   let resolved: Preference = { mode: "auto", preferred: null };
+  let ranked = upstreams;
   if (preference?.mode === "preferred") {
     if (!preference.preferred || !seen.has(preference.preferred)) {
       throw new Error(
@@ -118,9 +120,11 @@ export function parseConfig(raw: unknown): FanoutConfig {
       );
     }
     resolved = { mode: "preferred", preferred: preference.preferred };
+    // The list order is the priority, so the preferred relay is always first.
+    ranked = [...upstreams.filter((upstream) => upstream.name === preference.preferred), ...upstreams.filter((upstream) => upstream.name !== preference.preferred)];
   }
 
-  return { listen: { host, port: parsed.data.listen?.port ?? DEFAULT_LISTEN_PORT }, upstreams, preference: resolved };
+  return { listen: { host, port: parsed.data.listen?.port ?? DEFAULT_LISTEN_PORT }, upstreams: ranked, preference: resolved };
 }
 
 /** The file's contents for a config. Stable key order so the file reads the same every time. */

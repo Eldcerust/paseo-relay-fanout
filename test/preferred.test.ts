@@ -170,12 +170,12 @@ describe("when the preferred relay fails and comes back", () => {
     await waitFor(() => home.controlAttempts > attemptsWhenGivenUp, "the next retest", 4000);
   }, 20_000);
 
-  it("keeps the fastest of several fallbacks and stands the others down", async () => {
+  it("keeps the highest ranked of several fallbacks and stands the others down, however fast they are", async () => {
+    const home = await startRelay("home");
     const slow = await startRelay("slow", 0, { pongDelayMs: 120 });
     const fast = await startRelay("fast", 0, { pongDelayMs: 0 });
-    const home = await startRelay("home");
     const proxy = await startProxy(
-      [upstreamFor("slow", slow), upstreamFor("fast", fast), upstreamFor("home", home)],
+      [upstreamFor("home", home), upstreamFor("slow", slow), upstreamFor("fast", fast)],
       prefer("home"),
     );
     await startDaemon(proxy);
@@ -183,9 +183,9 @@ describe("when the preferred relay fails and comes back", () => {
 
     await home.close();
 
-    await waitFor(() => fast.control !== null && slow.control === null, "only the fastest fallback to remain", 8000);
-    expect(roleOf(proxy, "fast")).toBe("active");
-    expect(roleOf(proxy, "slow")).toBe("standby");
+    await waitFor(() => slow.control !== null && fast.control === null, "only the highest ranked fallback to remain", 8000);
+    expect(roleOf(proxy, "slow")).toBe("active");
+    expect(roleOf(proxy, "fast")).toBe("standby");
   }, 20_000);
 });
 

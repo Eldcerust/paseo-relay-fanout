@@ -21,7 +21,7 @@ describe("editing a relay", () => {
     expect(change.ok).toBe(true);
     if (!change.ok) return;
 
-    expect(names(change.config)).toEqual(["official", "house"]);
+    expect(names(change.config)).toEqual(["house", "official"]);
     expect(change.config.preference).toEqual({ mode: "preferred", preferred: "house" });
     expect(relay(change.config, "house")).toEqual({ name: "house", endpoint: "paseo.example.com:443", useTls: true });
     expect(change.upstream?.name).toBe("house");
@@ -41,7 +41,7 @@ describe("editing a relay", () => {
     expect(change.ok).toBe(true);
     if (!change.ok) return;
 
-    expect(names(change.config)).toEqual(["official", "lan"]);
+    expect(names(change.config)).toEqual(["lan", "official"]);
     expect(relay(change.config, "lan")).toEqual({ name: "lan", endpoint: "relay.example.org:443", useTls: true });
     expect(change.config.preference).toEqual({ mode: "preferred", preferred: "lan" });
   });
@@ -97,7 +97,7 @@ describe("the edit action", () => {
     const { actions, committed, config } = harness();
     expect(actions.editRelay({ name: "home", newName: "house" })).toEqual({ ok: true, name: "house" });
     expect(committed).toHaveLength(1);
-    expect(names(config())).toEqual(["official", "house"]);
+    expect(names(config())).toEqual(["house", "official"]);
   });
 
   it("answers a refusal without saving", () => {
@@ -115,6 +115,6 @@ describe("the edit action", () => {
       error: "Could not save the config: EACCES: permission denied",
     });
     expect(committed).toHaveLength(0);
-    expect(names(config())).toEqual(["official", "home"]);
+    expect(names(config())).toEqual(["home", "official"]);
   });
 });

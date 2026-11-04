@@ -1,7 +1,7 @@
 import type { ActionResult, ImportResult } from "../shared/status";
 import type { FanoutConfig } from "./config";
 import { describeConfig, needsRestart, parseImportedConfig } from "./import";
-import { addRelay, editRelay, removeRelay, setPreference, type Change } from "./relays";
+import { addRelay, editRelay, removeRelay, reorderRelays, setPreference, type Change } from "./relays";
 
 /** Where the actions read the current config from and send a new one to. */
 export interface ActionHost {
@@ -39,6 +39,7 @@ export function createActions(host: ActionHost) {
       return run(change, change.ok ? change.upstream?.name : undefined);
     },
     removeRelay: (input: { name: string }): ActionResult => run(removeRelay(host.config(), input.name)),
+    reorderRelays: (input: { names: string[] }): ActionResult => run(reorderRelays(host.config(), input.names)),
     editRelay: (input: { name: string; newName?: string; address?: string }): ActionResult => {
       const change = editRelay(host.config(), input);
       return run(change, change.ok ? change.upstream?.name : undefined);

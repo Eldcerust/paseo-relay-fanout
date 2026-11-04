@@ -65,7 +65,7 @@ export const statusRpc = defineRpc({
     daemonConnected: z.boolean(),
     serverId: z.string().nullable(),
     upstreams: z.array(upstreamStatusSchema),
-    /** Which relay is preferred; "auto" keeps every relay open. Optional for older plugins. */
+    /** In priority mode the first relay is preferred; "auto" keeps every relay open. Optional for older plugins. */
     preference: preferenceSchema.optional(),
     /** The preferred relay is not serving, so the others are up in its place. */
     fallbackActive: z.boolean().optional(),
@@ -99,7 +99,7 @@ const resultSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(false), error: z.string() }),
 ]);
 
-/** Prefer one relay, or go back to Auto. */
+/** Turn priority mode on with one relay at the top, or go back to Auto. */
 export const preferenceRpc = defineRpc({
   name: "relay-fanout.preference",
   input: z.discriminatedUnion("mode", [
@@ -127,6 +127,16 @@ export const editRelayRpc = defineRpc({
     newName: z.string().optional(),
     address: z.string().optional(),
   }),
+  output: resultSchema,
+});
+
+/**
+ * Set the priority order from the list on the screen. It must name every relay once. In priority
+ * mode the first relay becomes the preferred one and the others take over in order.
+ */
+export const reorderRelaysRpc = defineRpc({
+  name: "relay-fanout.reorder-relays",
+  input: z.object({ names: z.array(z.string()) }),
   output: resultSchema,
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseConfig, type FanoutConfig } from "../server/config";
-import { addRelay, removeRelay, setPreference } from "../server/relays";
+import { addRelay, removeRelay, reorderRelays, setPreference } from "../server/relays";
 
 const base = (): FanoutConfig =>
   parseConfig({
@@ -76,9 +76,15 @@ describe("removeRelay", () => {
     expect(result.ok && result.config.preference).toEqual({ mode: "preferred", preferred: "official" });
   });
 
-  it("goes back to Auto when the preferred relay is removed, instead of leaving a name that points nowhere", () => {
-    const config = { ...base(), preference: { mode: "preferred" as const, preferred: "home" } };
-    const result = removeRelay(config, "home");
+  it("promotes the next relay when the preferred one is removed, and stays in priority mode", () => {
+    const config = setPreference(base(), { mode: "preferred", preferred: "home" });
+    if (!config.ok) throw new Error(config.error);
+    const result = removeRelay(config.config, "home");
+    expect(result.ok && result.config.preference).toEqual({ mode: "preferred", preferred: "official" });
+  });
+
+  it("stays in Auto when a relay is removed from Auto", () => {
+    const result = removeRelay(base(), "official");
     expect(result.ok && result.config.preference).toEqual({ mode: "auto", preferred: null });
   });
 
@@ -103,5 +109,59 @@ describe("setPreference", () => {
   it("refuses a relay that is not in the list", () => {
     const result = setPreference(base(), { mode: "preferred", preferred: "ghost" });
     expect(!result.ok && result.error).toMatch(/no relay called "ghost"/);
+  });
+});
+
+describe("setPreference puts the preferred relay on top", () => {
+  it("moves it first and keeps the others in their order", () => {
+    const three = addRelay(base(), { address: "wss://relay.example.org", name: "backup" });
+    if (!three.ok) throw new Error(three.error);
+    const result = setPreference(three.config, { mode: "preferred", preferred: "backup" });
+    expect(result.ok && names(result.config)).toEqual(["backup", "official", "home"]);
+  });
+
+  it("keeps the order when going back to Auto", () => {
+    const preferred = setPreference(base(), { mode: "preferred", preferred: "home" });
+    if (!preferred.ok) throw new Error(preferred.error);
+    const auto = setPreference(preferred.config, { mode: "auto" });
+    expect(auto.ok && names(auto.config)).toEqual(["home", "official"]);
+  });
+});
+
+describe("reorderRelays", () => {
+  const three = () => {
+    const added = addRelay(base(), { address: "wss://relay.example.org", name: "backup" });
+    if (!added.ok) throw new Error(added.error);
+    return added.config;
+  };
+
+  it("sets the order, and makes the first relay the preferred one in priority mode", () => {
+    const start = setPreference(three(), { mode: "preferred", preferred: "official" });
+    if (!start.ok) throw new Error(start.error);
+    const result = reorderRelays(start.config, ["backup", "official", "home"]);
+    expect(result.ok && names(result.config)).toEqual(["backup", "official", "home"]);
+    expect(result.ok && result.config.preference).toEqual({ mode: "preferred", preferred: "backup" });
+  });
+
+  it("only remembers the order in Auto", () => {
+    const result = reorderRelays(three(), ["home", "backup", "official"]);
+    expect(result.ok && names(result.config)).toEqual(["home", "backup", "official"]);
+    expect(result.ok && result.config.preference).toEqual({ mode: "auto", preferred: null });
+  });
+
+  it("does not change the config it was given", () => {
+    const before = three();
+    reorderRelays(before, ["backup", "home", "official"]);
+    expect(names(before)).toEqual(["official", "home", "backup"]);
+  });
+
+  it.each([
+    ["a relay left out", ["official", "home"]],
+    ["a relay named twice", ["official", "official", "home"]],
+    ["a relay that does not exist", ["official", "home", "ghost"]],
+    ["an empty list", []],
+  ])("refuses %s", (_label, order) => {
+    const result = reorderRelays(three(), order);
+    expect(!result.ok && result.error).toMatch(/every relay once/);
   });
 });

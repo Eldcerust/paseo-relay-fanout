@@ -356,11 +356,6 @@ class UpstreamControl {
     return this.pingWindow.stat();
   }
 
-  /** The average ping, used to rank relays against each other. */
-  latencyMs(): number | null {
-    return this.pingWindow.stat().avgMs;
-  }
-
   /** What the priority rules need to know about this socket. */
   facts(now: number): { ready: boolean; readyForMs: number | null; unreadyForMs: number | null } {
     const ready = this.state === "connected" && this.ready;
@@ -559,8 +554,6 @@ class DataPipe {
 interface RelaySource {
   upstreams(): Upstream[];
   preference(): Preference;
-  /** The request round trip, used to rank a relay that has no ping yet. */
-  requestLatencyMs(name: string): number | null;
 }
 
 /**
@@ -638,7 +631,6 @@ class ControlSession {
       readyForMs: state?.readyForMs ?? null,
       unreadyForMs: state?.unreadyForMs ?? null,
       nextRetestAt: this.retestAt.get(upstream.name) ?? null,
-      latencyMs: control?.latencyMs() ?? this.source.requestLatencyMs(upstream.name),
     };
   }
 
@@ -971,7 +963,6 @@ export class FanoutProxy {
     const source: RelaySource = {
       upstreams: () => this.upstreams,
       preference: () => this.preference,
-      requestLatencyMs: (name) => this.probes.get(name)?.snapshot().request.avgMs ?? null,
     };
     const session = new ControlSession(ws, serverId, source, this.timing, this.logger, (closed) => {
       if (this.control === closed) this.control = null;

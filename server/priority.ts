@@ -8,6 +8,9 @@
  * the only one the daemon is registered with, and the others stand by. If it fails, the others are
  * brought up, and it is tried again every few minutes until it is back.
  *
+ * The relays are a ranked list. The preferred relay is the first, and the others take over in the
+ * order they are listed: the first one that is serving wins, whatever its latency.
+ *
  * "Auto" does not restrict anything. Every relay stays registered and every device picks the fastest
  * it measures itself, which beats any number the proxy could measure from the daemon's side.
  */
@@ -30,8 +33,6 @@ export interface RelayFacts {
   unreadyForMs: number | null;
   /** When a relay declared down is tried next; null when it is not down. */
   nextRetestAt: number | null;
-  /** Round trip used to rank relays against each other; null when unknown. */
-  latencyMs: number | null;
 }
 
 export interface PriorityTiming {
@@ -44,8 +45,8 @@ export interface PriorityTiming {
   /** How often a relay that was given up on is tried again. */
   retestMs: number;
   /**
-   * When several fallbacks are ready at once, wait this long for each to be measured before choosing.
-   * A fallback that is stood down can no longer be measured, so choosing too early could lock in the wrong one.
+   * A fallback that was only just opened gets this long to connect before one ranked below it is let
+   * win. A fallback that is stood down is not reconsidered, so choosing too early would lock in the wrong one.
    */
   settleMs: number;
 }
@@ -65,15 +66,6 @@ export interface Decision {
   declareDown: string | null;
   /** The others are up as a fallback. Latched until the preferred relay is stable again. */
   fallbackActive: boolean;
-}
-
-function byLatency(a: RelayFacts, b: RelayFacts): number {
-  const x = a.latencyMs;
-  const y = b.latencyMs;
-  if (x === null && y === null) return 0;
-  if (x === null) return 1;
-  if (y === null) return -1;
-  return x - y;
 }
 
 export function decide(input: {
@@ -106,20 +98,26 @@ export function decide(input: {
   if (!giveUp && !down) register.add(preferred.name); // being tried, ready, or due for its retest
 
   if (fallbackActive) {
-    const readyOthers = others.filter((relay) => relay.ready).sort(byLatency);
-    // Several fallbacks, and one has not been measured yet: keep them all until it has, or until it has
-    // had long enough that "no answer" is itself the measurement.
-    const settling = readyOthers.length > 1 && readyOthers.some((relay) => relay.latencyMs === null && (relay.readyForMs ?? 0) < timing.settleMs);
-    if (settling) {
-      for (const relay of readyOthers) register.add(relay.name);
-    } else if (readyOthers.length > 0) {
-      register.add(readyOthers[0]!.name);
+    // `others` is in list order, so the first one that is serving is the highest ranked.
+    let chosen: RelayFacts | undefined;
+    const connecting: string[] = [];
+    for (const relay of others) {
+      if (relay.ready) {
+        chosen = relay;
+        break;
+      }
+      // Ranked above the one that is serving, and only just opened: give it a moment to connect.
+      if (relay.registered && (relay.unreadyForMs ?? 0) < timing.settleMs) connecting.push(relay.name);
+    }
+    if (chosen) {
+      register.add(chosen.name);
+      for (const name of connecting) register.add(name);
     } else if (!preferred.ready) {
       for (const relay of others) register.add(relay.name); // nothing serves yet: try them all
     }
   }
 
-  // Keep the configured order, which also breaks ties.
+  // Keep the configured order.
   return {
     register: everything.filter((name) => register.has(name)),
     declareDown: giveUp ? preferred.name : null,

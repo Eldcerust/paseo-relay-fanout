@@ -27,9 +27,15 @@ describe("preference", () => {
     expect(parseConfig({ upstreams: two, preference: { mode: "auto" } }).preference).toEqual({ mode: "auto", preferred: null });
   });
 
-  it("accepts a preferred relay that exists", () => {
+  it("accepts a preferred relay that exists, and puts it first because the order is the priority", () => {
     const config = parseConfig({ upstreams: two, preference: { mode: "preferred", preferred: "home" } });
     expect(config.preference).toEqual({ mode: "preferred", preferred: "home" });
+    expect(config.upstreams.map((upstream) => upstream.name)).toEqual(["home", "official"]);
+  });
+
+  it("keeps the order as written in Auto, where it is only remembered", () => {
+    const config = parseConfig({ upstreams: two, preference: { mode: "auto" } });
+    expect(config.upstreams.map((upstream) => upstream.name)).toEqual(["official", "home"]);
   });
 
   it.each([
@@ -75,6 +81,6 @@ describe("saving", () => {
 
   it("spells out TLS for every relay, so the file does not depend on the port heuristic", () => {
     const parsed = JSON.parse(serializeConfig(sample)) as { upstreams: Array<{ useTls: boolean }> };
-    expect(parsed.upstreams.map((u) => u.useTls)).toEqual([true, false]);
+    expect(parsed.upstreams.map((u) => u.useTls)).toEqual([false, true]);
   });
 });

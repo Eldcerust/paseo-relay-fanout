@@ -13,6 +13,7 @@ import {
   pairingRpc,
   preferenceRpc,
   removeRelayRpc,
+  reorderRelaysRpc,
   statusRpc,
 } from "./shared/status";
 
@@ -72,6 +73,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(preferenceRpc, (input) => actions.setPreference(input));
   server.handle(addRelayRpc, (input) => actions.addRelay(input));
   server.handle(removeRelayRpc, (input) => actions.removeRelay(input));
+  server.handle(reorderRelaysRpc, (input) => actions.reorderRelays(input));
   server.handle(editRelayRpc, (input) => actions.editRelay(input));
   // An export is a copy of what is running now, so it is taken from `current`, not from `loaded`.
   server.handle(exportConfigRpc, () => {

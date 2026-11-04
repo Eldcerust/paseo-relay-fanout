@@ -83,8 +83,8 @@ describe("showing the file before it is applied", () => {
   it("lists the relays, the priority and the address", () => {
     expect(describeConfig(incoming())).toEqual({
       relays: [
-        { name: "official", endpoint: "relay.paseo.sh:443", useTls: true },
         { name: "lan", endpoint: "192.0.2.10:8411", useTls: false },
+        { name: "official", endpoint: "relay.paseo.sh:443", useTls: true },
       ],
       preference: { mode: "preferred", preferred: "lan" },
       listen: { host: "127.0.0.1", port: 7800 },

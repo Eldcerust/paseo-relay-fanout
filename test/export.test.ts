@@ -80,6 +80,6 @@ describe("exporting the config", () => {
 
     const exported = exportConfig({ config: current, configPath, at });
     const written = JSON.parse(exported.json) as { upstreams: Array<{ name: string }> };
-    expect(written.upstreams.map((upstream) => upstream.name)).toEqual(["official"]);
+    expect(written.upstreams.map((upstream) => upstream.name)).toEqual(["lan"]);
   });
 });

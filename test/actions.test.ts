@@ -74,12 +74,23 @@ describe("actions", () => {
     expect(config().upstreams).toHaveLength(2);
   });
 
+  it("reorders the relays and saves the order, or refuses without saving", () => {
+    const { actions, committed, config } = harness();
+    expect(actions.reorderRelays({ names: ["home", "official"] })).toEqual({ ok: true });
+    expect(config().upstreams.map((u) => u.name)).toEqual(["home", "official"]);
+    expect(committed).toHaveLength(1);
+
+    const refused = actions.reorderRelays({ names: ["home"] });
+    expect(refused.ok).toBe(false);
+    expect(committed).toHaveLength(1);
+  });
+
   it("builds each change on the one before it", () => {
     const { actions, config } = harness();
     actions.addRelay({ address: "wss://relay.example.org", name: "backup" });
     actions.setPreference({ mode: "preferred", preferred: "backup" });
     actions.removeRelay({ name: "home" });
-    expect(config().upstreams.map((u) => u.name)).toEqual(["official", "backup"]);
+    expect(config().upstreams.map((u) => u.name)).toEqual(["backup", "official"]);
     expect(config().preference).toEqual({ mode: "preferred", preferred: "backup" });
   });
 
@@ -102,9 +113,9 @@ describe("actions", () => {
 
     const reloaded = loadConfig({ PASEO_RELAY_FANOUT_CONFIG: file }).config;
     expect(reloaded.upstreams.map((u) => [u.name, u.endpoint, u.useTls])).toEqual([
+      ["netbird", "198.51.100.10:8411", false],
       ["official", "relay.paseo.sh:443", true],
       ["home", "paseo.example.com:443", true],
-      ["netbird", "198.51.100.10:8411", false],
     ]);
     expect(reloaded.preference).toEqual({ mode: "preferred", preferred: "netbird" });
   });
