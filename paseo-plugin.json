@@ -3,6 +3,9 @@
   "name": "Relay Fan-out",
   "description": "Keep one Paseo daemon registered with several relays at once, such as the official relay and a self-hosted one.",
   "media": [],
+  "build": [
+    ["npm", "ci", "--omit=dev", "--ignore-scripts"]
+  ],
   "requirements": {
     "paseo": ">=0.14.0"
   }
